@@ -7,6 +7,9 @@ import type { VoiceSessionInfo, VoiceSessionStart, VoiceStatus } from "@/domain/
 import { api } from "@/lib/client-http";
 import type { Conversation } from "./assistant-shell";
 import { microphoneConstraints, microphoneError, stopMicrophoneTest, useMicrophonePreference } from "./use-microphone";
+import { stopSpeakerTest, useSpeakerPreference } from "./use-speaker";
+import { useVoicePlayback } from "./use-voice-playback";
+import { configureVoiceSpeaker, validateVoiceSpeaker, voiceSpeakerError, watchVoiceSpeaker } from "./voice-playback";
 import { voiceConversationError } from "./voice-conversation-state";
 import { classifyVoiceError } from "./voice-errors";
 
@@ -21,13 +24,16 @@ type Options = {
 export type SiftVoice = ReturnType<typeof useVoiceSession>;
 export function useVoiceSession({ ensureConversation, getPageContext, contextSignal, refreshConversation, openTranscript }: Options) {
   const { deviceId } = useMicrophonePreference();
+  const { deviceId: speakerDeviceId } = useSpeakerPreference();
   const controls = useConversationControls(), input = useConversationInput(), mode = useConversationMode(), connection = useConversationStatus();
   const [stage, setStage] = useState<"idle" | "checking" | "permission" | "connecting" | "connected" | "ending">("idle");
+  const playback = useVoicePlayback(stage === "connected");
   const [error, setError] = useState(""), [notice, setNotice] = useState(""), [thinking, setThinking] = useState(false), [updating, setUpdating] = useState(false);
   const [caption, setCaption] = useState<{ speaker: "You" | "Sift"; text: string } | null>(null);
   const session = useRef<VoiceSessionInfo | null>(null), wanted = useRef(false), generation = useRef(0), userMuted = useRef(false), boundContext = useRef("");
   const bootstrap = useRef<AbortController | null>(null), syncQueue = useRef<Promise<void>>(Promise.resolve()), refreshInFlight = useRef<Promise<void> | null>(null);
   const ending = useRef<Promise<void> | null>(null), initialError = useRef("");
+  const selectedSpeaker = useRef(""), selectedMicrophone = useRef("");
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null), expiryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { startSession, endSession } = controls, { setMuted: setSdkMuted } = input;
   const setMuted = useCallback((muted: boolean) => {
@@ -39,28 +45,34 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
     }
   }, [setSdkMuted]);
 
-  const end = useCallback((message = "", confirmation = false): Promise<void> => {
+  const end = useCallback((message = "", confirmation = false, stoppedNotice = ""): Promise<void> => {
     if (ending.current) return ending.current;
-    wanted.current = false; generation.current++; bootstrap.current?.abort(); bootstrap.current = null;
+    wanted.current = false; const stoppedGeneration = ++generation.current; bootstrap.current?.abort(); bootstrap.current = null;
     const previous = session.current; session.current = null;
     if (refreshTimer.current) clearTimeout(refreshTimer.current);
     if (expiryTimer.current) clearTimeout(expiryTimer.current);
     setMuted(true); endSession(); setThinking(false); setUpdating(false); setStage("ending");
-    setError(message); setNotice(confirmation ? "Confirm the action in Sift to continue. Voice has stopped." : "");
+    setError(message); setNotice(confirmation ? "Confirm the action in Sift to continue. Voice has stopped." : stoppedNotice);
     const task = Promise.resolve().then(async () => {
       try { if (previous) await api(`/api/voice/sessions/${previous.id}`, { method: "DELETE" }); }
-      catch { if (!message) setNotice("Voice has stopped on this device. The server connection will close when its short lease expires."); }
+      catch {
+        if (!message && generation.current === stoppedGeneration) setNotice(`${stoppedNotice ? `${stoppedNotice} ` : ""}Voice has stopped on this device. The server connection will close when its short lease expires.`);
+      }
       finally {
         if (previous?.conversationId) {
           const saved = await refreshConversation(previous.conversationId).catch(() => null);
-          if (saved?.lastError && JSON.stringify([saved.lastError, saved.messages.at(-1)?.id]) !== initialError.current) setError(saved.lastError);
+          // An intentional device change can interrupt the old reply. Its
+          // canonical error stays in text, while the controls explain restart.
+          const failure = saved && (stoppedNotice ? voiceConversationError(saved) : saved.lastError);
+          if (failure && generation.current === stoppedGeneration && JSON.stringify([saved?.lastError, saved?.messages.at(-1)?.id]) !== initialError.current) setError(failure);
         }
-        setStage("idle"); ending.current = null;
-        if (confirmation) openTranscript();
+        if (generation.current === stoppedGeneration) { setStage("idle"); if (confirmation) openTranscript(); }
+        ending.current = null;
       }
     });
     ending.current = task; return task;
   }, [endSession, setMuted, refreshConversation, openTranscript]);
+  const endForAudioSettings = useCallback(() => end("", false, "Voice has stopped. You can test or change your audio devices."), [end]);
 
   const refreshSaved = useCallback(function refreshSaved(): Promise<void> {
     if (refreshInFlight.current) return refreshInFlight.current;
@@ -116,7 +128,17 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
     onConnect: ({ conversationId }) => {
       if (!wanted.current) { endSession(); return; }
       if (session.current?.providerConversationId !== conversationId) { void end("Voice couldn’t verify its connection. Please try again."); return; }
-      setStage("connected"); setMuted(userMuted.current); void synchronize();
+      // The provider sets its active instance before firing onConnect, so its
+      // supported controls are ready here. Keep input muted until the explicit
+      // speaker route has succeeded, and fence late device setup after End.
+      const attempt = generation.current;
+      setMuted(true);
+      void configureVoiceSpeaker(controls, selectedSpeaker.current, () => wanted.current && generation.current === attempt).then(() => {
+        if (!wanted.current || generation.current !== attempt) return;
+        setStage("connected"); setMuted(userMuted.current); void synchronize();
+      }).catch((error: unknown) => {
+        if (wanted.current && generation.current === attempt) void end(voiceSpeakerError(error));
+      });
     },
     onDisconnect: (details) => {
       if (!wanted.current) return;
@@ -140,9 +162,10 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
   });
 
   const start = useCallback(async () => {
-    if (wanted.current || stage === "ending") return;
-    stopMicrophoneTest();
+    if (wanted.current || ending.current || stage === "ending") return;
+    stopMicrophoneTest(); stopSpeakerTest();
     const attempt = ++generation.current; wanted.current = true; userMuted.current = false;
+    selectedSpeaker.current = speakerDeviceId; selectedMicrophone.current = deviceId;
     const controller = new AbortController(); bootstrap.current = controller;
     setError(""); setNotice(""); setCaption(null); setThinking(false); setStage("checking");
     try {
@@ -156,6 +179,9 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
       // The SDK owns the actual call microphone and its cleanup.
       const microphone = await navigator.mediaDevices.getUserMedia({ audio: microphoneConstraints(deviceId) });
       microphone.getTracks().forEach((track) => track.stop());
+      if (!wanted.current || generation.current !== attempt) return;
+      try { await validateVoiceSpeaker(selectedSpeaker.current); }
+      catch (error) { throw new Error(voiceSpeakerError(error)); }
       if (!wanted.current || generation.current !== attempt) return;
       setStage("connecting");
       const conversation = await ensureConversation();
@@ -171,8 +197,14 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
     } catch (error) {
       if (generation.current === attempt && wanted.current) await end(microphoneError(error));
     } finally { if (bootstrap.current === controller) bootstrap.current = null; }
-  }, [stage, deviceId, ensureConversation, getPageContext, setMuted, startSession, end]);
+  }, [stage, deviceId, speakerDeviceId, ensureConversation, getPageContext, setMuted, startSession, end]);
 
+  useEffect(() => {
+    if (!wanted.current || (selectedMicrophone.current === deviceId && selectedSpeaker.current === speakerDeviceId)) return;
+    // Preferences remain editable during a call and during startup. End the
+    // bound session once; a new paid connection always needs another tap.
+    void end("", false, "Audio device changed. Start voice again to use it.");
+  }, [deviceId, speakerDeviceId, end]);
   useEffect(() => { void synchronize(); }, [contextSignal, synchronize]);
   useEffect(() => {
     if (stage !== "connected") return;
@@ -181,6 +213,12 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
     window.addEventListener("offline", disconnected);
     return () => { clearInterval(heartbeat); window.removeEventListener("offline", disconnected); };
   }, [stage, synchronize, end]);
+  useEffect(() => {
+    const outputDeviceId = selectedSpeaker.current;
+    if (stage !== "connected" || !outputDeviceId) return;
+    const attempt = generation.current;
+    return watchVoiceSpeaker(outputDeviceId, () => wanted.current && generation.current === attempt, (message) => { void end(message); });
+  }, [stage, end]);
   useEffect(() => {
     const release = () => {
       wanted.current = false; generation.current++; bootstrap.current?.abort();
@@ -198,7 +236,7 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
 
   const busy = stage !== "idle";
   const phase: VoicePhase = stage === "idle" ? error ? "error" : "idle" : stage !== "connected" ? stage : updating ? "updating" : input.isMuted ? "muted" : mode.isSpeaking ? "speaking" : thinking ? "thinking" : connection.status === "connected" ? "listening" : "connecting";
-  return { phase, busy, error, notice, caption, isMuted: input.isMuted, start, end,
+  return { phase, busy, error, notice, caption, isMuted: input.isMuted, start, end, endForAudioSettings, ...playback,
     toggleMute: () => { userMuted.current = !input.isMuted; setMuted(userMuted.current || updating); },
     dismiss: () => { setError(""); setNotice(""); },
   };
