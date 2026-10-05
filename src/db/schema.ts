@@ -198,6 +198,7 @@ export const conversations = pgTable("conversations", {
   workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
   createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   title: text("title").notNull(), messages: jsonb("messages").$type<UIMessage[]>().notNull().default([]),
+  modelId: text("model_id"),
   activeRunId: uuid("active_run_id"), leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
   lastError: text("last_error"), createdAt: createdAt(), updatedAt: updatedAt(),
 }, (table) => [index("conversations_workspace_user_idx").on(table.workspaceId, table.createdByUserId, table.updatedAt)]);

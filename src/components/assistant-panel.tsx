@@ -10,6 +10,7 @@ import { api } from "@/lib/client-http";
 import type { Conversation, ConversationList } from "./assistant-shell";
 import { AssistantMessage } from "./assistant-message";
 import { AssistantDetails } from "./assistant-details";
+import { ModelSelector } from "./model-selector";
 import { SiftMark } from "./brand";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -117,7 +118,7 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
           {conversation && <AssistantDetails conversation={conversation} showReceipts={!!(error || clientError || savedError)} onNavigate={() => onOpenChange(false)} />}
           {!conversation && !loading && loadError && <Button variant="outline" onClick={() => onOpenChange(true)}>Try again</Button>}
         </div>
-        <form className="border-t bg-background px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]" onSubmit={(event) => { event.preventDefault(); void submit(); }}><div className="relative"><Textarea aria-label="Message Sift" disabled={loading || !conversation} value={input} onChange={(event) => setInput(event.target.value)} maxLength={8000} placeholder="Ask Sift…" className="max-h-44 min-h-24 resize-none rounded-2xl bg-muted/35 pb-12 pr-4 text-base sm:text-sm" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} /><Button type="submit" size="icon" aria-label="Send message" disabled={busy || pendingApproval || !input.trim() || !conversation} className="absolute bottom-2 right-2 size-9 rounded-xl">{streaming ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div><p className="mt-2 text-center text-[11px] leading-relaxed text-muted-foreground">{pendingApproval ? "Respond to the confirmation above to continue." : "Recipe changes are kept in version history."}</p></form>
+        <form className="border-t bg-background px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]" onSubmit={(event) => { event.preventDefault(); void submit(); }}>{conversation && <ModelSelector conversation={conversation} disabled={busy || pendingApproval} onBusy={setActionBusy} onChanged={onConversationChanged} />}<div className="relative"><Textarea aria-label="Message Sift" disabled={loading || !conversation} value={input} onChange={(event) => setInput(event.target.value)} maxLength={8000} placeholder="Ask Sift…" className="max-h-44 min-h-24 resize-none rounded-2xl bg-muted/35 pb-12 pr-4 text-base sm:text-sm" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} /><Button type="submit" size="icon" aria-label="Send message" disabled={busy || pendingApproval || !input.trim() || !conversation} className="absolute bottom-2 right-2 size-9 rounded-xl">{streaming ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div><p className="mt-2 text-center text-[11px] leading-relaxed text-muted-foreground">{pendingApproval ? "Respond to the confirmation above to continue." : "Recipe changes are kept in version history."}</p></form>
       </>}
     </SheetContent>
   </Sheet>;

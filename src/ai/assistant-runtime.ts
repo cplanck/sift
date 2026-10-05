@@ -12,7 +12,7 @@ import { getRecipe } from "@/services/recipes";
 import { getCookingSession } from "@/services/cooking";
 import type { Actor } from "@/services/workspaces";
 import { assistantInstructions, resolveAssistantContext } from "./context";
-import { gatewayModel } from "./models";
+import { prepareAssistantModel } from "./models";
 import { providerErrorMessage } from "./provider-errors";
 import { createRecipeTools, safeAssistantError, type RecipeTools } from "./recipe-tools";
 
@@ -51,9 +51,10 @@ export async function assistantResponse(db: Database, actor: Actor, input: unkno
   const page = await resolveAssistantContext(db, actor, request.context);
   await getConversation(db, actor, request.conversationId);
   const userKey = await resolveGatewayCredential(db, actor.userId);
-  const model = options.model ?? gatewayModel("assistant", userKey);
+  const chooseModel = options.model ? undefined : prepareAssistantModel(userKey);
   await consumeLimit(db, actor, "assistant", 60);
   const run = await beginConversationTurn(db, actor, request);
+  const model = options.model ?? chooseModel!(run.modelId);
   const trustedMessages = settledMessages(run.messages, "approval" in request ? request.approval.id : undefined);
   const tools = createRecipeTools(db, actor, { conversationId: request.conversationId, runId: run.runId });
   let approvalIssued = false;

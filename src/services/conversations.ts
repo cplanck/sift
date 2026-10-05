@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Database, Executor } from "@/db/connection";
 import { conversations, conversationToolCalls, conversationTurns } from "@/db/schema";
 import { assistantRequestSchema, type AssistantRequest } from "@/domain/assistant";
+import { assistantModelOptions } from "@/ai/models";
 import { DomainError } from "@/domain/errors";
 import { assertMembership, type Actor } from "./workspaces";
 import { getUsageSummary } from "./ai-usage";
@@ -11,6 +12,11 @@ import { getUsageSummary } from "./ai-usage";
 const scope = (actor: Actor, id: string) => and(eq(conversations.id, id), eq(conversations.workspaceId, actor.workspaceId), eq(conversations.createdByUserId, actor.userId));
 const isBusy = (row: typeof conversations.$inferSelect) => !!row.activeRunId && !!row.leaseExpiresAt && row.leaseExpiresAt.getTime() > Date.now();
 const titleSchema = z.object({ title: z.string().trim().min(1).max(120) }).strict();
+const modelSchema = z.object({
+  modelId: z.enum(assistantModelOptions.map((model) => model.id)).nullable(),
+  expectedModelId: z.string().min(1).max(200).nullable(),
+}).strict();
+const hasPendingApproval = (messages: UIMessage[]) => messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested"));
 const interrupted = "The previous reply was interrupted. Some changes may have been saved; review the recipe before asking again.";
 
 async function scopedConversation(db: Executor, actor: Actor, id: string) {
@@ -22,7 +28,7 @@ async function scopedConversation(db: Executor, actor: Actor, id: string) {
 }
 export async function listConversations(db: Database, actor: Actor) {
   await assertMembership(db, actor);
-  return db.select({ id: conversations.id, title: conversations.title, createdAt: conversations.createdAt, updatedAt: conversations.updatedAt }).from(conversations)
+  return db.select({ id: conversations.id, title: conversations.title, modelId: conversations.modelId, createdAt: conversations.createdAt, updatedAt: conversations.updatedAt }).from(conversations)
     .where(and(eq(conversations.workspaceId, actor.workspaceId), eq(conversations.createdByUserId, actor.userId))).orderBy(desc(conversations.updatedAt));
 }
 export async function getConversation(db: Database, actor: Actor, id: string) {
@@ -33,7 +39,7 @@ export async function getConversation(db: Database, actor: Actor, id: string) {
   const receipts = await db.select({ toolName: conversationToolCalls.toolName, result: conversationToolCalls.result, createdAt: conversationToolCalls.createdAt }).from(conversationToolCalls)
     .where(eq(conversationToolCalls.conversationId, row.id)).orderBy(desc(conversationToolCalls.createdAt)).limit(20);
   const usage = await getUsageSummary(db, actor, row.id);
-  return { id: row.id, title: row.title, messages: row.messages, lastError: row.activeRunId && !busy ? interrupted : row.lastError, busy, receipts, usage, createdAt: row.createdAt, updatedAt: row.updatedAt };
+  return { id: row.id, title: row.title, modelId: row.modelId, messages: row.messages, lastError: row.activeRunId && !busy ? interrupted : row.lastError, busy, receipts, usage, createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
 export async function createConversation(db: Database, actor: Actor, input: unknown = {}) {
   const data = titleSchema.partial().parse(input);
@@ -46,6 +52,25 @@ export async function renameConversation(db: Database, actor: Actor, id: string,
   await scopedConversation(db, actor, id);
   await db.update(conversations).set({ title, updatedAt: new Date() }).where(scope(actor, id));
   return getConversation(db, actor, id);
+}
+export async function setConversationModel(db: Database, actor: Actor, id: string, input: unknown) {
+  const data = modelSchema.parse(input);
+  return db.transaction(async (tx) => {
+    await scopedConversation(tx, actor, id);
+    const [row] = await tx.select().from(conversations).where(scope(actor, id)).for("update");
+    if (!row) throw new DomainError("NOT_FOUND", "Conversation not found.");
+    if (isBusy(row)) throw new DomainError("CONFLICT", "Wait for the current reply before changing models.");
+    if (hasPendingApproval(row.messages)) throw new DomainError("CONFLICT", "Approve or decline the pending action before changing models.");
+    if (row.modelId !== data.expectedModelId) throw new DomainError("CONFLICT", "The model changed in another window. Reload the conversation before choosing again.");
+    // Invalidate an expired run so its late stream cannot save a pending
+    // approval after the user has switched to a different model.
+    if (row.activeRunId) await tx.update(conversationTurns).set({ status: "failed", finishedAt: new Date() }).where(and(eq(conversationTurns.id, row.activeRunId), eq(conversationTurns.conversationId, row.id)));
+    await tx.update(conversations).set({
+      modelId: data.modelId, updatedAt: new Date(),
+      ...(row.activeRunId ? { activeRunId: null, leaseExpiresAt: null, lastError: interrupted } : {}),
+    }).where(scope(actor, id));
+    return getConversation(tx, actor, id);
+  });
 }
 export async function deleteConversation(db: Database, actor: Actor, id: string) {
   return db.transaction(async (tx) => {
@@ -87,7 +112,7 @@ export async function beginConversationTurn(db: Database, actor: Actor, input: A
     }
     const [turn] = await tx.insert(conversationTurns).values({ conversationId: row.id, requestId: data.requestId, status: "running" }).returning({ id: conversationTurns.id });
     await tx.update(conversations).set({ messages, activeRunId: turn.id, leaseExpiresAt: new Date(Date.now() + 120_000), lastError: null, updatedAt: new Date(), ...(row.title === "New conversation" && "message" in data ? { title: data.message.text.slice(0, 80) } : {}) }).where(scope(actor, row.id));
-    return { runId: turn.id, messages };
+    return { runId: turn.id, messages, modelId: row.modelId };
   });
 }
 

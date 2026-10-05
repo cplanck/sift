@@ -43,6 +43,13 @@
       "when": 1791225841454,
       "tag": "0005_pink_monster_badoon",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791226755029,
+      "tag": "0006_sudden_mandarin",
+      "breakpoints": true
     }
   ]
 }
