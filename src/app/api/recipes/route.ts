@@ -1,6 +1,6 @@
 import { database } from "@/db";
 import { requestActor } from "@/lib/auth";
-import { apiError, assertSameOrigin, json } from "@/lib/http";
+import { apiError, assertSameOrigin, json, readJson } from "@/lib/http";
 import { createRecipe, listRecipes } from "@/services/recipes";
 
 export async function GET(request: Request) {
@@ -8,6 +8,6 @@ export async function GET(request: Request) {
   catch (error) { return apiError(error); }
 }
 export async function POST(request: Request) {
-  try { assertSameOrigin(request); return json(await createRecipe(database(), await requestActor(request), await request.json()), 201); }
+  try { assertSameOrigin(request); return json(await createRecipe(database(), await requestActor(request), await readJson(request)), 201); }
   catch (error) { return apiError(error); }
 }

@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Executor } from "@/db/connection";
-import { recipeFavorites, recipeNotes, recipes, recipeVersions } from "@/db/schema";
+import { recipeFavorites, recipeImports, recipeNotes, recipes, recipeVersions } from "@/db/schema";
 import { DomainError } from "@/domain/errors";
 import { createRecipeSchema, searchLibrary, updateRecipeSchema, type RecipeSummary } from "@/domain/recipe";
 import { assertMembership, type Actor } from "./workspaces";
@@ -34,7 +34,8 @@ export async function getRecipe(db: Database, actor: Actor, id: string) {
   const [version] = await db.select().from(recipeVersions).where(and(eq(recipeVersions.workspaceId, actor.workspaceId), eq(recipeVersions.recipeId, id), eq(recipeVersions.id, recipe.currentVersionId!)));
   if (!version) throw new DomainError("NOT_FOUND", "Recipe version not found.");
   const [favorite] = await db.select().from(recipeFavorites).where(and(eq(recipeFavorites.workspaceId, actor.workspaceId), eq(recipeFavorites.recipeId, id), eq(recipeFavorites.userId, actor.userId)));
-  return { ...recipe, version, favorite: !!favorite };
+  const [review] = recipe.status === "draft" ? await db.select({ id: recipeImports.id }).from(recipeImports).where(and(eq(recipeImports.recipeId, id), eq(recipeImports.workspaceId, actor.workspaceId))).limit(1) : [];
+  return { ...recipe, version, favorite: !!favorite, reviewImportId: review?.id ?? null };
 }
 
 export async function listRecipes(db: Database, actor: Actor, query = ""): Promise<RecipeSummary[]> {
@@ -86,9 +87,18 @@ export async function restoreVersion(db: Database, actor: Actor, id: string, inp
 
 export async function setRecipeStatus(db: Database, actor: Actor, id: string, input: unknown) {
   const status = z.enum(["active", "archived"]).parse(input);
-  await scopedRecipe(db, actor, id);
+  const current = await scopedRecipe(db, actor, id);
+  if (current.status === "draft") throw new DomainError("INVALID_INPUT", "Review and approve the import before changing its Library status.");
   const [recipe] = await db.update(recipes).set({ status, updatedAt: new Date(), updatedByUserId: actor.userId }).where(recipeScope(actor, id)).returning();
   return recipe;
+}
+
+// Called by the reviewed import workflow inside its transaction, after corrections
+// have been validated and versioned. Not exposed as a generic API or agent action.
+export async function publishReviewedRecipe(db: Executor, actor: Actor, id: string, expectedVersionId: string) {
+  const current = await scopedRecipe(db, actor, id);
+  if (current.currentVersionId !== expectedVersionId) throw new DomainError("CONFLICT", "This draft changed during review. Reload it before approval.");
+  await db.update(recipes).set({ status: "active", updatedAt: new Date(), updatedByUserId: actor.userId }).where(recipeScope(actor, id));
 }
 
 export async function setFavorite(db: Database, actor: Actor, id: string, input: unknown) {

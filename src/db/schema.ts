@@ -106,3 +106,49 @@ export const recipeFavorites = pgTable("recipe_favorites", {
   foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "recipe_favorites_workspace_recipe_fk" }).onDelete("cascade"),
   index("recipe_favorites_workspace_user_idx").on(table.workspaceId, table.userId),
 ]);
+
+export const photos = pgTable("photos", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  recipeId: uuid("recipe_id"),
+  purpose: text("purpose", { enum: ["recipe", "import"] }).notNull(),
+  status: text("status", { enum: ["pending", "ready"] }).default("pending").notNull(),
+  objectKey: text("object_key").notNull().unique(),
+  contentType: text("content_type").notNull(), byteSize: integer("byte_size").notNull(),
+  width: integer("width"), height: integer("height"),
+  createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: createdAt(),
+}, (table) => [
+  foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "photos_workspace_recipe_fk" }).onDelete("cascade"),
+  index("photos_workspace_recipe_idx").on(table.workspaceId, table.recipeId),
+]);
+
+export const recipeImports = pgTable("recipe_imports", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  kind: text("kind", { enum: ["paste", "url", "image"] }).notNull(),
+  rawText: text("raw_text"), sourceUrl: text("source_url"),
+  photoId: uuid("photo_id").references(() => photos.id, { onDelete: "set null" }),
+  recipeId: uuid("recipe_id").references(() => recipes.id, { onDelete: "set null" }),
+  status: text("status", { enum: ["queued", "processing", "review", "saved", "failed"] }).default("queued").notNull(),
+  errorMessage: text("error_message"),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [index("recipe_imports_workspace_status_idx").on(table.workspaceId, table.status)]);
+
+export const recipeShares = pgTable("recipe_shares", {
+  id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull(), recipeId: uuid("recipe_id").notNull(),
+  versionId: uuid("version_id").notNull().references(() => recipeVersions.id, { onDelete: "cascade" }),
+  coverPhotoId: uuid("cover_photo_id").references(() => photos.id, { onDelete: "set null" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }), createdAt: createdAt(),
+}, (table) => [
+  foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "recipe_shares_workspace_recipe_fk" }).onDelete("cascade"),
+  index("recipe_shares_workspace_recipe_idx").on(table.workspaceId, table.recipeId),
+]);
+
+export const usageLimits = pgTable("usage_limits", {
+  key: text("key").primaryKey(), userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  count: integer("count").default(1).notNull(), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (table) => [index("usage_limits_expires_idx").on(table.expiresAt)]);

@@ -48,7 +48,6 @@ html.dark { color-scheme: dark; }
 body { margin: 0; background: var(--background); color: var(--foreground); font-family: var(--font-sans); }
 button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 button:not(:disabled), a { cursor: pointer; }
-button, input, textarea, select { font: inherit; }
 ::selection { background: var(--foreground); color: var(--background); }
 .page-width { width: min(100% - 3rem, 80rem); margin-inline: auto; }
 .safe-bottom { padding-bottom: max(1.5rem, env(safe-area-inset-bottom)); }

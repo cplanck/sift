@@ -2,8 +2,10 @@ import { requireViewer } from "@/lib/auth";
 import { LibraryView } from "@/components/library";
 import { database } from "@/db";
 import { listRecipes } from "@/services/recipes";
+import { listPendingImports } from "@/services/imports";
 export const dynamic = "force-dynamic";
 export default async function Library() {
   const viewer = await requireViewer();
-  return <LibraryView name={viewer.name} initialRecipes={await listRecipes(database(), viewer)} />;
+  const [recipes, imports] = await Promise.all([listRecipes(database(), viewer), listPendingImports(database(), viewer)]);
+  return <LibraryView name={viewer.name} initialRecipes={recipes} initialImports={imports} />;
 }

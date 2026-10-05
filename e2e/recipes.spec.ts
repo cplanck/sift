@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { clientHeaders, expect, test } from "./fixtures";
 
 test("create, search, scale, note, version, restore, favorite and isolate recipes", async ({ page, browser }, testInfo) => {
   await page.emulateMedia({ colorScheme: "dark" });
@@ -49,9 +49,10 @@ test("create, search, scale, note, version, restore, favorite and isolate recipe
   await expect(page.getByRole("heading", { name: "Turkey Chili", exact: true })).toBeVisible();
   await page.screenshot({ path: `test-results/recipe-${testInfo.project.name}.png`, fullPage: true });
 
-  const other = await browser.newContext();
+  const other = await browser.newContext({ extraHTTPHeaders: clientHeaders() });
   try {
-    await other.request.post("http://localhost:3100/api/auth/sign-up/email", { data: { name: "Other", email: `other-${crypto.randomUUID()}@example.test`, password: "a-good-test-password-42" }, headers: { Origin: "http://localhost:3100" } });
+    const otherSignup = await other.request.post("http://localhost:3100/api/auth/sign-up/email", { data: { name: "Other", email: `other-${crypto.randomUUID()}@example.test`, password: "a-good-test-password-42" }, headers: { Origin: "http://localhost:3100" } });
+    expect(otherSignup.ok()).toBe(true);
     expect((await other.request.get(`http://localhost:3100/api/recipes/${recipeId}`)).status()).toBe(404);
     expect((await other.request.post(`http://localhost:3100/api/recipes/${recipeId}/actions`, { data: { action: "note", body: "intrusion" }, headers: { Origin: "http://localhost:3100" } })).status()).toBe(404);
   } finally { await other.close(); }

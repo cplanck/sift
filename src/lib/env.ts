@@ -11,6 +11,7 @@ const envSchema = z.object({
   BETTER_AUTH_SECRET: optional(z.string().min(32)),
   DATABASE_URL: optional(z.url().refine((value) => /^postgres(ql)?:/.test(value))),
   AI_GATEWAY_API_KEY: optional(z.string().min(1)),
+  AI_MODEL: optional(z.string().regex(/^anthropic\/[a-z0-9._-]+$/)),
   CREDENTIAL_ENCRYPTION_KEY: optional(z.string().regex(/^[A-Za-z0-9+/]{43}=$/)),
   R2_ACCOUNT_ID: optional(z.string().min(1)),
   R2_ACCESS_KEY_ID: optional(z.string().min(1)),
@@ -18,6 +19,7 @@ const envSchema = z.object({
   R2_BUCKET: optional(z.string().min(1)),
   INNGEST_EVENT_KEY: optional(z.string().min(1)),
   INNGEST_SIGNING_KEY: optional(z.string().min(1)),
+  INNGEST_DEV: optional(z.enum(["0", "1"])),
   ELEVENLABS_API_KEY: optional(z.string().min(1)),
   ELEVENLABS_AGENT_ID: optional(z.string().min(1)),
 });

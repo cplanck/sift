@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { database } from "@/db";
 import { requestActor } from "@/lib/auth";
-import { apiError, assertSameOrigin, json } from "@/lib/http";
+import { apiError, assertSameOrigin, json, readJson } from "@/lib/http";
 import { addRecipeNote, getRecipe, restoreVersion, setFavorite, setRecipeStatus, updateRecipe } from "@/services/recipes";
 
 const actionSchema = z.discriminatedUnion("action", [
@@ -14,7 +14,7 @@ const actionSchema = z.discriminatedUnion("action", [
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     assertSameOrigin(request);
-    const actor = await requestActor(request), { id } = await params, data = actionSchema.parse(await request.json()), db = database();
+    const actor = await requestActor(request), { id } = await params, data = actionSchema.parse(await readJson(request)), db = database();
     switch (data.action) {
       case "favorite": return json(await setFavorite(db, actor, id, data.favorite));
       case "note": return json(await addRecipeNote(db, actor, id, data), 201);

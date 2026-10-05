@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 test("sign up, personal workspace, sign out and sign in", async ({ page }) => {
   const email = `cook-${crypto.randomUUID()}@example.test`;

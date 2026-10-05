@@ -1,6 +1,6 @@
 import { database } from "@/db";
 import { requestActor } from "@/lib/auth";
-import { apiError, assertSameOrigin, json } from "@/lib/http";
+import { apiError, assertSameOrigin, json, readJson } from "@/lib/http";
 import { getRecipe, listRecipeNotes, listVersions, updateRecipe } from "@/services/recipes";
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -11,6 +11,6 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   } catch (error) { return apiError(error); }
 }
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  try { assertSameOrigin(request); return json(await updateRecipe(database(), await requestActor(request), (await params).id, await request.json())); }
+  try { assertSameOrigin(request); return json(await updateRecipe(database(), await requestActor(request), (await params).id, await readJson(request))); }
   catch (error) { return apiError(error); }
 }

@@ -24,8 +24,8 @@ function BrowserStatus() {
     update();
     window.addEventListener("online", update);
     window.addEventListener("offline", update);
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").then((registration) => {
+    if (process.env.NODE_ENV === "production" && "serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).then((registration) => {
         if (registration.waiting) setWaiting(registration.waiting);
         registration.addEventListener("updatefound", () => {
           const worker = registration.installing;
