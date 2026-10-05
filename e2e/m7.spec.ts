@@ -62,6 +62,7 @@ test("cooking voice asks for permission only on tap, explains denial, and opens 
   await page.getByRole("button", { name: "Cook", exact: true }).click();
   await expect(page.getByRole("region", { name: "Current cooking step", exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as MediaFixture).microphoneRequests)).toBe(0);
+  await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   await page.getByRole("button", { name: "Talk to Sift", exact: true }).click();
   const controls = page.getByRole("region", { name: "Sift voice", exact: true });
   await expect(controls.getByRole("alert")).toContainText("Microphone access is blocked");

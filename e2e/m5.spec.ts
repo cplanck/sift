@@ -32,6 +32,7 @@ test("a cook pins its version, persists progress and session notes, and finishes
   const getSession = async () => await (await page.request.get(`/api/cooking-sessions/${sessionId}`)).json();
   expect(await getSession()).toMatchObject({ recipeVersionId: recipe.version.id, status: "active", servings: 4, revision: 1 });
   await expect(page.getByRole("region", { name: "Current cooking step" }).getByText("Chop the carrots.", { exact: true })).toBeVisible();
+  await page.getByText("Ingredients & details", { exact: true }).click();
   await page.getByRole("checkbox", { name: "2 cups broth", exact: true }).check();
   await expect.poll(async () => (await getSession()).progress.checkedIngredients).toEqual(["0:0"]);
   await page.getByRole("button", { name: "Mark step done", exact: true }).click();
@@ -63,6 +64,7 @@ test("a cook pins its version, persists progress and session notes, and finishes
   await page.screenshot({ path: `test-results/cooking-mode-${testInfo.project.name}.png` });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 
+  await page.getByText("Ingredients & details", { exact: true }).click();
   await page.context().setOffline(true);
   await page.getByRole("checkbox", { name: "3¾ carrots", exact: true }).check();
   await expect(page.getByText(/Checkoffs on this screen won’t save or sync/)).toBeVisible();
@@ -72,7 +74,7 @@ test("a cook pins its version, persists progress and session notes, and finishes
   await expect(page.getByRole("checkbox", { name: "3¾ carrots", exact: true })).not.toBeChecked();
   expect((await getSession()).progress.checkedIngredients).toEqual(["0:0"]);
 
-  await page.getByRole("button", { name: "Ask Sift", exact: true }).click();
+  await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   const panel = page.getByRole("dialog", { name: "sift", exact: true });
   await panel.getByRole("textbox", { name: "Message Sift", exact: true }).fill("What step am I on?");
   const requestPromise = page.waitForRequest((request) => request.url().endsWith("/api/assistant") && request.method() === "POST");

@@ -20,7 +20,7 @@ export default async function RecipePage({ params, searchParams }: { params: Pro
     if (typeof cook !== "string") notFound();
     const session = await getCookingSession(database(), viewer, cook).catch(handleNotFound);
     if (session.recipeId !== id) notFound();
-    return <><AppHeader name={viewer.name} /><CookingMode key={session.id} initialSession={session} canEdit={session.startedByUserId === viewer.userId} coverPhotoId={recipe.coverPhotoId} /></>;
+    return <CookingMode key={session.id} initialSession={session} canEdit={session.startedByUserId === viewer.userId} coverPhotoId={recipe.coverPhotoId} />;
   }
   const [notes, versions, photos, history, active] = await Promise.all([
     listRecipeNotes(database(), viewer, id), listVersions(database(), viewer, id), listRecipePhotos(database(), viewer, id),
