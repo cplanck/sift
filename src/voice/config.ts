@@ -5,6 +5,9 @@ export const elevenVoiceConfiguration = {
   // English Agents currently require Flash/Turbo v2 (provider validates this).
   ttsModel: "eleven_flash_v2",
   maxDurationSeconds: 1800,
+  cascadeTimeoutSeconds: 15,
+  // ElevenLabs appends chat/completions to this OpenAI-compatible base URL.
+  llmBasePath: "/api/voice/llm/",
   callbackPath: "/api/voice/llm/chat/completions",
   webhookPath: "/api/voice/webhook",
 } as const;
@@ -27,9 +30,12 @@ export function buildElevenAgentConfig(input: { origin: string; voiceId: string;
           prompt: "Sift owns this conversation. Forward user speech to the configured Sift endpoint.",
           llm: "custom-llm", max_tokens: 3000, ignore_default_personality: true,
           tools: [], tool_ids: [], built_in_tools: {}, mcp_server_ids: [], native_mcp_server_ids: [], knowledge_base: [],
+          // The shared Sift tool runtime can take longer than the provider's
+          // four-second default before it has model text to speak.
+          cascade_timeout_seconds: elevenVoiceConfiguration.cascadeTimeoutSeconds,
           backup_llm_config: { preference: "disabled" }, enable_reasoning_summary: false,
           custom_llm: {
-            url: `${origin.origin}${elevenVoiceConfiguration.callbackPath}`,
+            url: `${origin.origin}${elevenVoiceConfiguration.llmBasePath}`,
             model_id: "sift", api_type: "chat_completions", api_key: { secret_id: secretId },
             request_headers: {
               "X-Sift-Voice-Conversation": { variable_name: "system__conversation_id" },
@@ -40,8 +46,9 @@ export function buildElevenAgentConfig(input: { origin: string; voiceId: string;
       },
       tts: { voice_id: voiceId, model_id: elevenVoiceConfiguration.ttsModel },
       turn: {
-        speculative_turn: false, turn_eagerness: "normal", turn_timeout: 30,
-        initial_wait_time: 30, silence_end_call_timeout: 300,
+        // -1 is accepted by the live Agents API and disables idle re-engagement.
+        speculative_turn: false, turn_eagerness: "normal", turn_timeout: -1,
+        initial_wait_time: -1, silence_end_call_timeout: 300,
         soft_timeout_config: { timeout_seconds: -1, use_llm_generated_message: false },
       },
       conversation: {

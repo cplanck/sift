@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq, inArray } from "drizzle-orm";
-import { simulateReadableStream } from "ai";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { isToolUIPart, simulateReadableStream } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { connectDatabase } from "@/db/connection";
-import { recipes, sessions, users, voiceSessions, voiceTurns } from "@/db/schema";
+import { recipes, sessions, usageLimits, users, voiceSessions, voiceTurns } from "@/db/schema";
 import { assistantResponse } from "@/ai/assistant-runtime";
+import { voiceConversationError } from "@/components/voice-conversation-state";
 import { getUsageSummary } from "@/services/ai-usage";
 import { beginConversationTurn, createConversation, finishConversationTurn, getConversation } from "@/services/conversations";
-import { createRecipe, listRecipeNotes, updateRecipe } from "@/services/recipes";
+import { createRecipe, getRecipe, listRecipeNotes, listVersions, updateRecipe } from "@/services/recipes";
 import { endVoiceSession, parseVoiceTurn, recordVoiceUsage, respondToVoice, startVoiceSession, updateVoiceSession } from "@/services/voice";
 import { ensurePersonalWorkspace, type Actor } from "@/services/workspaces";
 import { testDatabaseUrl } from "./database";
@@ -52,6 +53,7 @@ beforeAll(async () => {
   await db.insert(users).values(userIds.map((id) => ({ id, email: `${id}@example.test`, name: "Voice service test cook" })));
   [actorA, actorB] = await Promise.all(userIds.map(async (userId) => ({ userId, workspaceId: await ensurePersonalWorkspace(db, userId) })));
 });
+beforeEach(async () => { await db.delete(usageLimits).where(inArray(usageLimits.userId, userIds)); });
 afterAll(async () => {
   vi.unstubAllEnvs();
   await db.update(recipes).set({ currentVersionId: null }).where(inArray(recipes.workspaceId, [actorA.workspaceId, actorB.workspaceId]));
@@ -134,6 +136,145 @@ describe("Durable authenticated voice sessions with PostgreSQL", () => {
     expect(await db.select().from(voiceTurns).where(eq(voiceTurns.voiceSessionId, connected.id))).toHaveLength(2);
   });
 
+  it("accepts a revised final utterance at the same provider ordinal after its partial attempt aborts", async () => {
+    const recipe = await createRecipe(db, actorA, { content });
+    const { connected, conversation } = await start(actorA, { route: `/recipes/${recipe.id}` });
+    const partial = "Rename this recipe to George Lemon Soup.", full = `${partial} Only change the title.`;
+    const old = heldModel(text("An interrupted reply")), controller = new AbortController();
+    const response = await respondToVoice(db, connected.providerConversationId!, "0", body(partial), { model: old.model, abortSignal: controller.signal });
+    await old.started; controller.abort(); old.release(); await response.text();
+    const revised = modelWith(tool("updateRecipe", { recipeId: recipe.id, expectedVersionId: recipe.version.id,
+      content: { ...recipe.version.content, title: "George Lemon Soup" }, changeSummary: "Rename only" }), text("Renamed the recipe."));
+    await (await respondToVoice(db, connected.providerConversationId!, "0", body(full), { model: revised })).text();
+    const saved = await getConversation(db, actorA, conversation.id);
+    expect(saved.messages.filter((message) => message.role === "user").flatMap((message) => message.parts)).toEqual([{ type: "text", text: full }]);
+    expect((await getRecipe(db, actorA, recipe.id)).version.content).toEqual({ ...recipe.version.content, title: "George Lemon Soup" });
+    expect(await listVersions(db, actorA, recipe.id)).toHaveLength(2);
+    expect(saved.receipts).toHaveLength(1);
+    const unused = modelWith(text("Must not run"));
+    expect(await (await respondToVoice(db, connected.providerConversationId!, "0", body(full), { model: unused })).text()).toContain("Renamed the recipe");
+    expect(unused.doStreamCalls).toHaveLength(0);
+    await expect(respondToVoice(db, connected.providerConversationId!, "0", body(partial), { model: unused })).rejects.toMatchObject({ code: "CONFLICT" });
+    await (await respondToVoice(db, connected.providerConversationId!, "1", body(full, "Thank you"), { model: modelWith(text("You’re welcome.")) })).text();
+  });
+
+  it("reserves concurrent same-fingerprint revisions once and fences the old attempt’s tools", async () => {
+    const recipe = await createRecipe(db, actorA, { content });
+    const { connected } = await start(actorA, { route: `/recipes/${recipe.id}` });
+    const old = heldModel(tool("addRecipeNote", { recipeId: recipe.id, body: "Must not save" }));
+    const response = await respondToVoice(db, connected.providerConversationId!, "0", body("A partial request"), { model: old.model });
+    await old.started;
+    const revised = heldModel(text("The revised answer."));
+    const results = await Promise.allSettled([1, 2].map(() => respondToVoice(db, connected.providerConversationId!, "0", body("A partial request with a clarification"), { model: revised.model })));
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toEqual([expect.objectContaining({ reason: expect.objectContaining({ code: "CONFLICT" }) })]);
+    old.release(); revised.release(); await response.text();
+    for (const result of results) if (result.status === "fulfilled") await result.value.text();
+    expect(revised.model.doStreamCalls).toHaveLength(1);
+    expect(await listRecipeNotes(db, actorA, recipe.id)).toHaveLength(0);
+    expect(await db.select().from(voiceTurns).where(eq(voiceTurns.voiceSessionId, connected.id))).toHaveLength(2);
+  });
+
+  it("serializes different simultaneous tail revisions before either can commit a mutation", async () => {
+    const recipe = await createRecipe(db, actorA, { content });
+    const { connected, conversation } = await start(actorA, { route: `/recipes/${recipe.id}` });
+    const old = heldModel(text("An incomplete answer"));
+    const original = await respondToVoice(db, connected.providerConversationId!, "0", body("Rename this recipe"), { model: old.model });
+    await old.started;
+    const release = Promise.withResolvers<void>();
+    function rename(title: string) {
+      let calls = 0;
+      return new MockLanguageModelV4({ doStream: async () => {
+        const first = calls++ === 0;
+        return { stream: new ReadableStream<Chunk>({ async start(controller) {
+          if (first) await release.promise;
+          const chunks = first ? tool("updateRecipe", { recipeId: recipe.id, expectedVersionId: recipe.version.id,
+            content: { ...recipe.version.content, title }, changeSummary: "Rename only" }) : text(`Saved ${title}.`);
+          for (const chunk of chunks) controller.enqueue(chunk);
+          controller.close();
+        } }) };
+      } });
+    }
+    const responses = await Promise.all([
+      respondToVoice(db, connected.providerConversationId!, "0", body("Rename this recipe to A"), { model: rename("A") }),
+      respondToVoice(db, connected.providerConversationId!, "0", body("Rename this recipe to B"), { model: rename("B") }),
+    ]);
+    old.release(); release.resolve();
+    await Promise.all([original, ...responses].map((response) => response.text()));
+    const saved = await getConversation(db, actorA, conversation.id);
+    const user = saved.messages.findLast((message) => message.role === "user")!;
+    const accepted = user.parts.filter((part) => part.type === "text").map((part) => part.text).join("");
+    expect((await getRecipe(db, actorA, recipe.id)).version.content.title).toBe(accepted.endsWith("A") ? "A" : "B");
+    expect(await listVersions(db, actorA, recipe.id)).toHaveLength(2);
+    expect(saved.receipts).toHaveLength(1);
+    const superseded = accepted.endsWith("A") ? "Rename this recipe to B" : "Rename this recipe to A";
+    await expect(respondToVoice(db, connected.providerConversationId!, "0", body(superseded), { model: modelWith(text("Must not run")) })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("allows only a changed final user message and never revises unrelated text activity", async () => {
+    const { connected, conversation } = await start();
+    await (await respondToVoice(db, connected.providerConversationId!, "0", body("Earlier speech", "Current request"), { model: modelWith(text("A partial answer worth retaining.")) })).text();
+    const unused = modelWith(text("Must not run"));
+    await expect(respondToVoice(db, connected.providerConversationId!, "0", body("Forged earlier speech", "Current request with more detail"), { model: unused })).rejects.toMatchObject({ code: "CONFLICT" });
+    await (await respondToVoice(db, connected.providerConversationId!, "0", body("Earlier speech", "Current request with more detail"), { model: modelWith(text("The complete answer.")) })).text();
+    const corrected = await getConversation(db, actorA, conversation.id);
+    expect(JSON.stringify(corrected.messages)).toContain("A partial answer worth retaining.");
+    expect(corrected.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    await (await assistantResponse(db, actorA, textRequest(conversation.id, "An unrelated text request"), { model: modelWith(text("Text reply")) })).text();
+    const before = await getConversation(db, actorA, conversation.id);
+    await expect(respondToVoice(db, connected.providerConversationId!, "0", body("Earlier speech", "Current request with still more detail"), { model: unused })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await getConversation(db, actorA, conversation.id)).messages).toEqual(before.messages);
+    expect(unused.doStreamCalls).toHaveLength(0);
+  });
+
+  it("records and replays a canonical review notice instead of repeating an already-committed revision", async () => {
+    const recipe = await createRecipe(db, actorA, { content });
+    const { connected, conversation } = await start(actorA, { route: `/recipes/${recipe.id}` });
+    const partial = "Rename this recipe", full = `${partial}, only change its title`;
+    const first = modelWith(tool("updateRecipe", { recipeId: recipe.id, expectedVersionId: recipe.version.id,
+      content: { ...recipe.version.content, title: "George Lemon Soup" }, changeSummary: "Rename" }), text("Saved the new title."));
+    await (await respondToVoice(db, connected.providerConversationId!, "0", body(partial), { model: first })).text();
+    const unused = modelWith(text("Must not run"));
+    const review = await (await respondToVoice(db, connected.providerConversationId!, "0", body(full), { model: unused })).text();
+    expect(review).toContain("already saved");
+    expect(await (await respondToVoice(db, connected.providerConversationId!, "0", body(full), { model: unused })).text()).toContain("already saved");
+    // A second revision still belongs to the same logical utterance and must
+    // inspect the original mutation even though the last attempt was a notice.
+    await (await respondToVoice(db, connected.providerConversationId!, "0", body(`${full}, please`), { model: unused })).text();
+    const saved = await getConversation(db, actorA, conversation.id);
+    expect(JSON.stringify(saved.messages)).toContain(full);
+    expect(JSON.stringify(saved.messages)).toContain("already saved");
+    expect(JSON.stringify(saved.messages)).toContain("Saved the new title.");
+    expect(saved).toMatchObject({ busy: false, lastTurn: { status: "completed" } });
+    expect(saved.receipts).toHaveLength(1);
+    expect(await listVersions(db, actorA, recipe.id)).toHaveLength(2);
+    expect(unused.doStreamCalls).toHaveLength(0);
+    expect(saved.usage.calls).toBe(first.doStreamCalls.length);
+  });
+
+  it.each([true, false])("preserves native approval through a transcript revision and a later decision (%s)", async (approved) => {
+    const recipe = await createRecipe(db, actorA, { content });
+    const { connected, conversation } = await start(actorA, { route: `/recipes/${recipe.id}` });
+    await (await respondToVoice(db, connected.providerConversationId!, "0", body("Archive this recipe"), { model: modelWith(tool("archiveRecipe", { recipeId: recipe.id, expectedVersionId: recipe.version.id })) })).text();
+    const before = await getConversation(db, actorA, conversation.id);
+    const approval = before.messages.flatMap((message) => message.parts).find((part) => isToolUIPart(part) && part.state === "approval-requested");
+    expect(approval).toBeDefined();
+    const unused = modelWith(text("Must not run"));
+    const response = await respondToVoice(db, connected.providerConversationId!, "0", body("Archive this recipe after I review it"), { model: unused });
+    expect(await response.text()).toContain("Approve or decline");
+    const saved = await getConversation(db, actorA, conversation.id);
+    expect(saved.messages.flatMap((message) => message.parts).find((part) => isToolUIPart(part) && part.state === "approval-requested")).toEqual(approval);
+    expect(JSON.stringify(saved.messages)).toContain("after I review it");
+    expect((await getRecipe(db, actorA, recipe.id)).status).toBe("active");
+    expect(unused.doStreamCalls).toHaveLength(0);
+    if (!approval || !isToolUIPart(approval) || approval.state !== "approval-requested") throw new Error("Expected native approval");
+    await (await assistantResponse(db, actorA, { conversationId: conversation.id, requestId: randomUUID(), context: { route: `/recipes/${recipe.id}` },
+      approval: { id: approval.approval.id, approved } }, { model: modelWith(text(approved ? "Archived." : "Kept the recipe.")) })).text();
+    expect((await getRecipe(db, actorA, recipe.id)).status).toBe(approved ? "archived" : "active");
+    const finished = await getConversation(db, actorA, conversation.id);
+    expect(finished.messages.flatMap((message) => message.parts).some((part) => isToolUIPart(part) && part.state === "approval-requested")).toBe(false);
+  });
+
   it("barge-in fences the old voice run before its next mutation and persists only the newer reply", async () => {
     const recipe = await createRecipe(db, actorA, { content });
     const { connected, conversation } = await start(actorA, { route: `/recipes/${recipe.id}` });
@@ -149,6 +290,65 @@ describe("Durable authenticated voice sessions with PostgreSQL", () => {
     expect(turns.find((turn) => turn.userCount === 1)?.status).toBe("aborted");
     expect(turns.find((turn) => turn.userCount === 2)?.status).toBe("completed");
     await expect(respondToVoice(db, connected.providerConversationId!, "0", body("First utterance"), { model: modelWith(text("Must not replay")) })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("keeps voice available when a poll observes the old abort before the next utterance arrives", async () => {
+    const { connected, conversation } = await start();
+    expect(conversation.lastTurn).toBeNull();
+    const controller = new AbortController(), old = heldModel(text("Interrupted answer"));
+    const response = await respondToVoice(db, connected.providerConversationId!, "0", body("First utterance"), { model: old.model, abortSignal: controller.signal });
+    await old.started;
+    const running = await getConversation(db, actorA, conversation.id);
+    expect(running).toMatchObject({ busy: true, lastTurn: { status: "running" } });
+
+    // The provider cancels its old request before delivering the replacement.
+    controller.abort(); old.release(); await response.text();
+    const polled = await getConversation(db, actorA, conversation.id);
+    expect(polled).toMatchObject({ busy: false, lastTurn: { id: running.lastTurn!.id, status: "aborted" } });
+    expect(polled.lastError).toBeTruthy(); // Still visible in the text transcript.
+    expect(voiceConversationError(polled)).toBeNull();
+    const [session] = await db.select().from(voiceSessions).where(eq(voiceSessions.id, connected.id));
+    expect(session).toMatchObject({ status: "ready", activeRunId: null });
+
+    const replacement = modelWith(text("The replacement answer."));
+    await (await respondToVoice(db, connected.providerConversationId!, "1", body("First utterance", "Actually, a different question"), { model: replacement })).text();
+    const saved = await getConversation(db, actorA, conversation.id);
+    expect(saved).toMatchObject({ busy: false, lastError: null, lastTurn: { status: "completed" } });
+    expect(saved.lastTurn!.id).not.toBe(polled.lastTurn!.id);
+    expect(JSON.stringify(saved.messages)).toContain("The replacement answer.");
+    expect(replacement.doStreamCalls).toHaveLength(1);
+  });
+
+  it("reports a genuine failed voice turn as a terminal error after an earlier interruption", async () => {
+    const { connected, conversation } = await start();
+    const earlier = await beginConversationTurn(db, actorA, textRequest(conversation.id, "Earlier interrupted request"));
+    await finishConversationTurn(db, actorA, conversation.id, earlier.runId, earlier.messages, "aborted");
+    expect(voiceConversationError(await getConversation(db, actorA, conversation.id))).toBeNull();
+
+    const model = modelWith([{ type: "stream-start", warnings: [] }, { type: "error", error: new Error("Test provider failure") }]);
+    await (await respondToVoice(db, connected.providerConversationId!, "0", body("A new voice request"), { model })).text();
+    const polled = await getConversation(db, actorA, conversation.id);
+    expect(polled).toMatchObject({ busy: false, lastTurn: { status: "failed" } });
+    expect(polled.lastTurn!.id).not.toBe(earlier.runId);
+    expect(polled.lastError).toBeTruthy();
+    expect(voiceConversationError(polled)).toBe(polled.lastError);
+  });
+
+  it("orders saved turns by reservation order when transactions began in the opposite order", async () => {
+    const conversation = await createConversation(db, actorA);
+    const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const delayed = db.transaction(async (tx) => {
+      await tx.execute(sql`select 1`); started.resolve(); await release.promise;
+      return beginConversationTurn(tx, actorA, textRequest(conversation.id, "Started first, reserved last"));
+    });
+    await started.promise;
+    const earlier = await beginConversationTurn(db, actorA, textRequest(conversation.id, "Reserved first"));
+    await finishConversationTurn(db, actorA, conversation.id, earlier.runId, earlier.messages, "aborted");
+    release.resolve(); const later = await delayed;
+    await finishConversationTurn(db, actorA, conversation.id, later.runId, later.messages, "failed", "A genuine later failure.");
+    const saved = await getConversation(db, actorA, conversation.id);
+    expect(saved.lastTurn).toEqual({ id: later.runId, status: "failed" });
+    expect(voiceConversationError(saved)).toBe("A genuine later failure.");
   });
 
   it("fences navigation after committed actions while a same-page heartbeat keeps the run live", async () => {

@@ -22,6 +22,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", providerFetch); providerFetch.mockReset();
   vi.stubEnv("ELEVENLABS_API_KEY", sensitive);
   vi.stubEnv("BETTER_AUTH_URL", "https://sift.example");
+  vi.stubEnv("ELEVENLABS_CALLBACK_ORIGIN", "");
   vi.stubEnv("ELEVENLABS_AGENT_ID", "agent_sift");
   vi.stubEnv("ELEVENLABS_LLM_SECRET", "test-llm-secret-for-elevenlabs-000000000");
   vi.stubEnv("ELEVENLABS_WEBHOOK_SECRET", secret);
@@ -94,6 +95,31 @@ describe("private ElevenLabs transport", () => {
     expect(providerFetch).toHaveBeenCalledOnce();
   });
 
+  it("allows an explicit HTTPS callback tunnel backed by the same local app while preserving origin verification", async () => {
+    vi.stubEnv("BETTER_AUTH_URL", "http://localhost:3003");
+    vi.stubEnv("ELEVENLABS_CALLBACK_ORIGIN", "https://sift.example");
+    tokenResponse(Response.json({ token: "private-token", conversation_id: "conv_sift" }));
+    await expect(createElevenVoiceToken()).resolves.toMatchObject({ providerConversationId: "conv_sift" });
+    vi.stubEnv("ELEVENLABS_CALLBACK_ORIGIN", "https://wrong-tunnel.example");
+    await expect(createElevenVoiceToken()).rejects.toMatchObject({ code: "VOICE_CONFIGURATION" });
+  });
+
+  it("requires the LLM base URL because ElevenLabs appends chat/completions itself", async () => {
+    const agent = agentDefinition();
+    agent.conversation_config.agent.prompt.custom_llm.url += "chat/completions";
+    providerFetch.mockResolvedValue(Response.json(agent));
+    await expect(createElevenVoiceToken()).rejects.toMatchObject({ code: "VOICE_CONFIGURATION" });
+    expect(providerFetch).toHaveBeenCalledOnce(); // Reject before minting an unusable token.
+  });
+
+  it.each([4, undefined])("rejects a shortened or implicit provider cascade timeout (%s) before minting", async (timeout) => {
+    const agent = agentDefinition();
+    Object.assign(agent.conversation_config.agent.prompt, { cascade_timeout_seconds: timeout });
+    providerFetch.mockResolvedValue(Response.json(agent));
+    await expect(createElevenVoiceToken()).rejects.toMatchObject({ code: "VOICE_CONFIGURATION" });
+    expect(providerFetch).toHaveBeenCalledOnce();
+  });
+
   it("accepts the API's inert default start node but no linked subgraph or additional behavior", async () => {
     const agent = { ...agentDefinition(), workflow: { nodes: { start: { type: "start", position: { x: 0, y: 0 }, edge_order: [], parent_subgraph_id: null } }, edges: {}, subgraphs: {}, prevent_subagent_loops: true } };
     providerFetch.mockImplementation(async (url) => String(url).includes("/agents/") ? Response.json(agent) : Response.json({ token: "private-token", conversation_id: "conv_sift" }));
@@ -102,11 +128,12 @@ describe("private ElevenLabs transport", () => {
     await expect(createElevenVoiceToken()).rejects.toMatchObject({ code: "VOICE_CONFIGURATION" });
   });
 
-  it.each(["public", "override", "speculative", "tools", "workflow", "procedures", "forged-header"])("fails closed when the provider agent enables %s", async (change) => {
+  it.each(["public", "override", "speculative", "idle-reengagement", "tools", "workflow", "procedures", "forged-header"])("fails closed when the provider agent enables %s", async (change) => {
     const agent = agentDefinition();
     if (change === "public") agent.platform_settings.auth.enable_auth = false;
     if (change === "override") agent.platform_settings.overrides.custom_llm_extra_body = true;
     if (change === "speculative") agent.conversation_config.turn.speculative_turn = true;
+    if (change === "idle-reengagement") agent.conversation_config.turn.turn_timeout = 30;
     if (change === "tools") Object.assign(agent.conversation_config.agent.prompt, { tool_ids: ["foreign-tool"] });
     if (change === "workflow") Object.assign(agent, { workflow: { nodes: { foreign: {} }, edges: {} } });
     if (change === "procedures") Object.assign(agent, { procedures: { foreign: { procedure_id: "external-procedure" } } });
@@ -156,10 +183,11 @@ describe("provisioned Sift voice agent boundary", () => {
     expect(config.conversation_config.tts.model_id).toBe("eleven_flash_v2");
     expect(config.conversation_config.agent.prompt).toMatchObject({ llm: "custom-llm", tools: [], tool_ids: [], mcp_server_ids: [], backup_llm_config: { preference: "disabled" } });
     expect(config.conversation_config.agent.prompt.custom_llm).toEqual({
-      url: "https://sift.example/api/voice/llm/chat/completions", model_id: "sift", api_type: "chat_completions", api_key: { secret_id: "callback_secret" },
+      url: "https://sift.example/api/voice/llm/", model_id: "sift", api_type: "chat_completions", api_key: { secret_id: "callback_secret" },
       request_headers: { "X-Sift-Voice-Conversation": { variable_name: "system__conversation_id" }, "X-Sift-Voice-Turn": { variable_name: "system__agent_turns" } },
     });
     expect(config.conversation_config.turn.speculative_turn).toBe(false);
+    expect(config.conversation_config.turn).toMatchObject({ turn_timeout: -1, initial_wait_time: -1, silence_end_call_timeout: 300 });
     expect(config.conversation_config.conversation.client_events).toContain("interruption");
     const overrides = config.platform_settings.overrides;
     expect(overrides.custom_llm_extra_body).toBe(false);

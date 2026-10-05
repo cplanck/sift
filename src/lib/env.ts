@@ -4,6 +4,12 @@ const optional = <T extends z.ZodType>(schema: T) => z.preprocess(
   (value) => value === "" ? undefined : value,
   schema.optional(),
 );
+const httpsOrigin = z.url({ protocol: /^https$/ }).refine((value) => {
+  try {
+    const url = new URL(value);
+    return !url.username && !url.password && url.pathname === "/" && !url.search && !url.hash;
+  } catch { return false; }
+}).transform((value) => new URL(value).origin);
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -22,6 +28,7 @@ const envSchema = z.object({
   INNGEST_DEV: optional(z.enum(["0", "1"])),
   ELEVENLABS_API_KEY: optional(z.string().min(1)),
   ELEVENLABS_AGENT_ID: optional(z.string().min(1)),
+  ELEVENLABS_CALLBACK_ORIGIN: optional(httpsOrigin),
   ELEVENLABS_LLM_SECRET: optional(z.string().min(32)),
   ELEVENLABS_WEBHOOK_SECRET: optional(z.string().min(32)),
 });

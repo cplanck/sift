@@ -50,7 +50,7 @@ export type AssistantRuntimeOptions = {
   waitUntil?: (task: Promise<void>) => void;
   abortSignal?: AbortSignal;
   /** Trusted server lifecycle hook; wraps the shared begin in a voice transaction. */
-  beginTurn?: (begin: (tx: Database) => Promise<StartedConversationTurn>) => Promise<StartedConversationTurn>;
+  beginTurn?: (begin: (tx: Database) => Promise<StartedConversationTurn>) => Promise<StartedConversationTurn | Response>;
   /** Recheck a durable voice session/turn before each billed model call. */
   assertActive?: (runId: string) => Promise<void>;
 };
@@ -74,7 +74,11 @@ async function runAssistantResponse(db: Database, actor: Actor, input: unknown, 
   await consumeLimit(db, actor, "assistant", 60);
   options.abortSignal?.throwIfAborted();
   const begin = (tx: Database) => beginConversationTurn(tx, actor, request);
-  const run = options.beginTurn ? await options.beginTurn(begin) : await begin(db);
+  const started = options.beginTurn ? await options.beginTurn(begin) : await begin(db);
+  // A trusted transport can settle a duplicate or a review-only notice without
+  // starting another model call. HTTP input cannot supply this lifecycle hook.
+  if (started instanceof Response) return started;
+  const run = started;
   let approvalIssued = false;
   let settled = false;
   let settlement: Promise<void> | undefined;

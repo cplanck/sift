@@ -6,6 +6,8 @@ import type { ClientPageContext } from "@/domain/assistant";
 import type { VoiceSessionInfo, VoiceSessionStart, VoiceStatus } from "@/domain/voice";
 import { api } from "@/lib/client-http";
 import type { Conversation } from "./assistant-shell";
+import { microphoneConstraints, microphoneError, stopMicrophoneTest, useMicrophonePreference } from "./use-microphone";
+import { voiceConversationError } from "./voice-conversation-state";
 
 export type VoicePhase = "idle" | "checking" | "permission" | "connecting" | "updating" | "listening" | "thinking" | "speaking" | "muted" | "ending" | "error";
 type Options = {
@@ -16,14 +18,8 @@ type Options = {
   openTranscript: () => void;
 };
 export type SiftVoice = ReturnType<typeof useVoiceSession>;
-function permissionError(error: unknown) {
-  const name = error instanceof Error ? error.name : "";
-  if (name === "NotAllowedError" || name === "SecurityError") return "Microphone access is blocked. Allow it in your browser’s site settings, then try again. You can keep using text.";
-  if (name === "NotFoundError") return "No microphone was found. Connect one or keep using text.";
-  if (name === "NotReadableError") return "Your microphone is unavailable. Check whether another app is using it, then try again.";
-  return error instanceof Error ? error.message : "Voice couldn’t start. Check your connection and try again.";
-}
 export function useVoiceSession({ ensureConversation, getPageContext, contextSignal, refreshConversation, openTranscript }: Options) {
+  const { deviceId } = useMicrophonePreference();
   const controls = useConversationControls(), input = useConversationInput(), mode = useConversationMode(), connection = useConversationStatus();
   const [stage, setStage] = useState<"idle" | "checking" | "permission" | "connecting" | "connected" | "ending">("idle");
   const [error, setError] = useState(""), [notice, setNotice] = useState(""), [thinking, setThinking] = useState(false), [updating, setUpdating] = useState(false);
@@ -75,7 +71,8 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
         if (!wanted.current || session.current?.id !== current.id || !saved) return;
         const approval = saved.messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested" && !part.approval.isAutomatic));
         if (approval) { await end("", true); return; }
-        if (saved.lastError && !saved.busy && JSON.stringify([saved.lastError, saved.messages.at(-1)?.id]) !== initialError.current) { await end(saved.lastError); return; }
+        const failure = voiceConversationError(saved);
+        if (failure && JSON.stringify([saved.lastError, saved.messages.at(-1)?.id]) !== initialError.current) { await end(failure); return; }
         if (saved.busy) refreshTimer.current = setTimeout(() => { void refreshSaved(); }, 1500);
         else setThinking(false);
       } catch { /* A failed receipt refresh is retried at the next event or heartbeat. */ }
@@ -136,6 +133,7 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
 
   const start = useCallback(async () => {
     if (wanted.current || stage === "ending") return;
+    stopMicrophoneTest();
     const attempt = ++generation.current; wanted.current = true; userMuted.current = false;
     const controller = new AbortController(); bootstrap.current = controller;
     setError(""); setNotice(""); setCaption(null); setThinking(false); setStage("checking");
@@ -148,7 +146,7 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
       setStage("permission");
       // Ask only after a tap, and release this permission probe immediately.
       // The SDK owns the actual call microphone and its cleanup.
-      const microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const microphone = await navigator.mediaDevices.getUserMedia({ audio: microphoneConstraints(deviceId) });
       microphone.getTracks().forEach((track) => track.stop());
       if (!wanted.current || generation.current !== attempt) return;
       setStage("connecting");
@@ -161,11 +159,11 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
       session.current = created; boundContext.current = JSON.stringify(context);
       expiryTimer.current = setTimeout(() => { void end("This voice session reached its time limit. Reconnect to continue in the same conversation."); }, Math.max(0, Date.parse(created.expiresAt) - Date.now()));
       setMuted(false);
-      startSession({ conversationToken: created.conversationToken, connectionType: "webrtc", useWakeLock: false });
+      startSession({ conversationToken: created.conversationToken, connectionType: "webrtc", useWakeLock: false, ...(deviceId ? { inputDeviceId: deviceId } : {}) });
     } catch (error) {
-      if (generation.current === attempt && wanted.current) await end(permissionError(error));
+      if (generation.current === attempt && wanted.current) await end(microphoneError(error));
     } finally { if (bootstrap.current === controller) bootstrap.current = null; }
-  }, [stage, ensureConversation, getPageContext, setMuted, startSession, end]);
+  }, [stage, deviceId, ensureConversation, getPageContext, setMuted, startSession, end]);
 
   useEffect(() => { void synchronize(); }, [contextSignal, synchronize]);
   useEffect(() => {

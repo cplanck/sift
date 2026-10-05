@@ -88,8 +88,8 @@ async function providerGet(path: string): Promise<unknown> {
 }
 
 export async function createElevenVoiceToken() {
-  const { ELEVENLABS_AGENT_ID, BETTER_AUTH_URL } = requireConfig(["ELEVENLABS_AGENT_ID", "ELEVENLABS_LLM_SECRET"]);
-  const origin = new URL(BETTER_AUTH_URL).origin;
+  const { ELEVENLABS_AGENT_ID, ELEVENLABS_CALLBACK_ORIGIN, BETTER_AUTH_URL } = requireConfig(["ELEVENLABS_AGENT_ID", "ELEVENLABS_LLM_SECRET"]);
+  const origin = new URL(ELEVENLABS_CALLBACK_ORIGIN ?? BETTER_AUTH_URL).origin;
   if (!origin.startsWith("https://")) throw new ElevenLabsProviderError("VOICE_CONFIGURATION", 503, "Voice needs a public HTTPS Sift deployment so ElevenLabs can reach its callback. Continue with text here or use the deployed app.");
   const definition = await providerGet(`/v1/convai/agents/${encodeURIComponent(ELEVENLABS_AGENT_ID)}`);
   if (!isSafeElevenAgent(definition, origin, ELEVENLABS_AGENT_ID)) {
@@ -127,8 +127,9 @@ function isSafeElevenAgent(value: unknown, origin: string, agentId: string) {
         tools: emptyIds, tool_ids: emptyIds, mcp_server_ids: emptyIds, native_mcp_server_ids: emptyIds, knowledge_base: emptyIds,
         built_in_tools: z.record(z.string(), z.unknown()).refine((tools) => Object.values(tools).every((tool) => tool === null)).nullish(),
         backup_llm_config: z.object({ preference: z.literal("disabled") }),
+        cascade_timeout_seconds: z.literal(elevenVoiceConfiguration.cascadeTimeoutSeconds),
         custom_llm: z.object({
-          url: z.literal(`${origin}${elevenVoiceConfiguration.callbackPath}`), api_type: z.literal("chat_completions"),
+          url: z.literal(`${origin}${elevenVoiceConfiguration.llmBasePath}`), api_type: z.literal("chat_completions"),
           api_key: z.object({ secret_id: providerId }),
           request_headers: z.object({
             "X-Sift-Voice-Conversation": z.object({ variable_name: z.literal("system__conversation_id") }),
@@ -136,7 +137,8 @@ function isSafeElevenAgent(value: unknown, origin: string, agentId: string) {
           }),
         }),
       }) }),
-      turn: z.object({ speculative_turn: z.literal(false), soft_timeout_config: z.object({ use_llm_generated_message: z.literal(false) }) }),
+      turn: z.object({ speculative_turn: z.literal(false), turn_timeout: z.literal(-1), initial_wait_time: z.literal(-1), silence_end_call_timeout: z.literal(300),
+        soft_timeout_config: z.object({ use_llm_generated_message: z.literal(false) }) }),
       conversation: z.object({ max_duration_seconds: z.number().int().positive().max(elevenVoiceConfiguration.maxDurationSeconds), client_events: z.array(z.string()).refine((events) => events.includes("interruption")) }),
     }),
     platform_settings: z.object({

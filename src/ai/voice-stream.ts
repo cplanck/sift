@@ -25,21 +25,28 @@ export function createVoiceStreamResponse(options: {
   const encoded = new ReadableStream<Uint8Array>({
     async start(controller) {
       controller.enqueue(chunk({ role: "assistant" }));
+      // ElevenLabs needs content, not just a role chunk, while an agentic
+      // reply starts. Give slow turns audible feedback without another model
+      // call or putting transport filler into the canonical conversation.
+      const acknowledgement = setTimeout(() => {
+        text += "One moment... ";
+        controller.enqueue(chunk({ content: "One moment... " }));
+      }, 1000);
       const reader = options.stream.getReader();
       try {
         while (true) {
           const { value: part, done } = await reader.read();
           if (done) break;
-          if (part.type === "text-delta") { text += part.delta; controller.enqueue(chunk({ content: part.delta })); }
-          else if (part.type === "tool-approval-request") requiresApproval = true;
-          else if (part.type === "error") sawError = true;
-          else if (part.type === "abort") sawAbort = true;
+          if (part.type === "text-delta") { if (part.delta) clearTimeout(acknowledgement); text += part.delta; controller.enqueue(chunk({ content: part.delta })); }
+          else if (part.type === "tool-approval-request") { clearTimeout(acknowledgement); requiresApproval = true; }
+          else if (part.type === "error") { clearTimeout(acknowledgement); sawError = true; }
+          else if (part.type === "abort") { clearTimeout(acknowledgement); sawAbort = true; }
         }
       } catch {
         // A source failure skips TransformStream.flush. Recover here so every
         // accepted voice turn still gets its durable terminal callback.
         sawError = true;
-      } finally { reader.releaseLock(); }
+      } finally { clearTimeout(acknowledgement); reader.releaseLock(); }
       const recorded = options.getOutcome();
       const outcome = sawAbort || recorded === "aborted" ? "aborted" : sawError || recorded === "failed" ? "failed" : "completed";
       const explanation = outcome === "aborted" ? interrupted : outcome === "failed" ? options.getErrorMessage?.() ?? failed : requiresApproval ? confirmation : "";

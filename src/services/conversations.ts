@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { isToolUIPart, type UIMessage } from "ai";
 import { z } from "zod";
 import type { Database, Executor } from "@/db/connection";
@@ -34,14 +34,24 @@ export async function listConversations(db: Database, actor: Actor) {
     .where(and(eq(conversations.workspaceId, actor.workspaceId), eq(conversations.createdByUserId, actor.userId))).orderBy(desc(conversations.updatedAt));
 }
 export async function getConversation(db: Database, actor: Actor, id: string) {
-  const row = await scopedConversation(db, actor, id);
+  await assertMembership(db, actor);
+  if (!z.uuid().safeParse(id).success) throw new DomainError("NOT_FOUND", "Conversation not found.");
+  const latestTurn = db.select({ id: conversationTurns.id, status: conversationTurns.status }).from(conversationTurns)
+    .where(eq(conversationTurns.conversationId, conversations.id))
+    .orderBy(desc(conversationTurns.createdAt), desc(conversationTurns.id)).limit(1).as("last_turn");
+  // Read the error, active lease and latest turn in one database snapshot. A
+  // concurrent barge-in must not combine an old error with a newer turn status.
+  const [saved] = await db.select({ row: conversations, lastTurn: { id: latestTurn.id, status: latestTurn.status } }).from(conversations)
+    .leftJoinLateral(latestTurn, sql`true`).where(scope(actor, id));
+  if (!saved) throw new DomainError("NOT_FOUND", "Conversation not found.");
+  const { row, lastTurn } = saved;
   const busy = isBusy(row);
   // The mutation journal survives even a process crash between a tool commit and
   // stream persistence, so a reload can show what actually changed.
   const receipts = await db.select({ toolName: conversationToolCalls.toolName, result: conversationToolCalls.result, createdAt: conversationToolCalls.createdAt }).from(conversationToolCalls)
     .where(eq(conversationToolCalls.conversationId, row.id)).orderBy(desc(conversationToolCalls.createdAt)).limit(20);
   const usage = await getUsageSummary(db, actor, row.id);
-  return { id: row.id, title: row.title, modelId: row.modelId, messages: row.messages, lastError: row.activeRunId && !busy ? interrupted : row.lastError, busy, receipts, usage, createdAt: row.createdAt, updatedAt: row.updatedAt };
+  return { id: row.id, title: row.title, modelId: row.modelId, messages: row.messages, lastError: row.activeRunId && !busy ? interrupted : row.lastError, lastTurn, busy, receipts, usage, createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
 export async function createConversation(db: Database, actor: Actor, input: unknown = {}) {
   const data = titleSchema.partial().parse(input);
@@ -112,7 +122,9 @@ export async function beginConversationTurn(db: Database, actor: Actor, input: A
       }) }));
       if (!found) throw new DomainError("INVALID_INPUT", "This action is no longer awaiting approval. Reload the conversation.");
     }
-    const [turn] = await tx.insert(conversationTurns).values({ conversationId: row.id, requestId: data.requestId, status: "running" }).returning({ id: conversationTurns.id });
+    // Transaction start time can precede a newer turn that acquired this lock
+    // first. Record reservation order after the lock, not PostgreSQL now().
+    const [turn] = await tx.insert(conversationTurns).values({ conversationId: row.id, requestId: data.requestId, status: "running", createdAt: sql`clock_timestamp()` }).returning({ id: conversationTurns.id });
     await tx.update(conversations).set({ messages, activeRunId: turn.id, leaseExpiresAt: new Date(Date.now() + 120_000), lastError: null, updatedAt: new Date(), ...(row.title === "New conversation" && "message" in data ? { title: data.message.text.slice(0, 80) } : {}) }).where(scope(actor, row.id));
     return { runId: turn.id, messages, modelId: row.modelId };
   });
@@ -121,6 +133,37 @@ export async function beginConversationTurn(db: Database, actor: Actor, input: A
 export async function assertConversationRun(db: Executor, actor: Actor, conversationId: string, runId: string) {
   const row = await scopedConversation(db, actor, conversationId);
   if (row.activeRunId !== runId || !isBusy(row)) throw new DomainError("CONFLICT", "This reply is no longer active. Reload the conversation.");
+}
+
+// Trusted transport notices explain already-saved work without running a model
+// or resolving any pending native approval. They share the canonical transcript.
+export async function recordConversationNotice(db: Database, actor: Actor, input: AssistantRequest, reply: string) {
+  const data = assistantRequestSchema.parse(input);
+  if (!("message" in data)) throw new DomainError("INVALID_INPUT", "A notice requires its user message.");
+  const text = z.string().trim().min(1).max(2000).parse(reply);
+  return db.transaction(async (tx) => {
+    await scopedConversation(tx, actor, data.conversationId);
+    const [row] = await tx.select().from(conversations).where(scope(actor, data.conversationId)).for("update");
+    if (!row) throw new DomainError("NOT_FOUND", "Conversation not found.");
+    if (row.activeRunId) throw new DomainError("CONFLICT", "Wait for the current reply before continuing.");
+    if (row.messages.length >= 200) throw new DomainError("INVALID_INPUT", "This conversation is full. Start a new conversation; your history will remain available.");
+    const [previous] = await tx.select({ id: conversationTurns.id }).from(conversationTurns)
+      .where(and(eq(conversationTurns.conversationId, row.id), eq(conversationTurns.requestId, data.requestId)));
+    if (previous || row.messages.some((message) => message.id === data.message.id)) throw new DomainError("CONFLICT", "This request was already received.");
+    const [turn] = await tx.insert(conversationTurns).values({ conversationId: row.id, requestId: data.requestId, status: "completed", createdAt: sql`clock_timestamp()`, finishedAt: new Date() }).returning({ id: conversationTurns.id });
+    const notice: UIMessage[] = [
+      { id: data.message.id, role: "user", parts: [{ type: "text", text: data.message.text }] },
+      { id: crypto.randomUUID(), role: "assistant", parts: [{ type: "text", text }] },
+    ];
+    // The SDK resumes native approval from the final assistant/tool message.
+    // Keep that proposal intact and last, with the clarification/notice before
+    // it; appending a new user message after it would invalidate native resume.
+    const approvalIndex = row.messages.findLastIndex((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested"));
+    const insertion = approvalIndex < 0 ? row.messages.length : approvalIndex;
+    const messages = [...row.messages.slice(0, insertion), ...notice, ...row.messages.slice(insertion)];
+    await tx.update(conversations).set({ messages, lastError: null, updatedAt: new Date() }).where(scope(actor, row.id));
+    return { runId: turn.id };
+  });
 }
 
 // A voice disconnect/new utterance may cancel only the run its durable voice

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { config } from "dotenv";
 import { z } from "zod";
@@ -16,8 +16,14 @@ const stateSchema = z.object({
 });
 
 async function run() {
-  config({ path: ".env.local", quiet: true });
-  const { values } = parseArgs({ options: { origin: { type: "string" }, "voice-id": { type: "string" }, apply: { type: "boolean", default: false } } });
+  const { values } = parseArgs({ options: { origin: { type: "string" }, "voice-id": { type: "string" }, "config-file": { type: "string" }, apply: { type: "boolean", default: false } } });
+  const envPath = resolve(values["config-file"] ?? ".env.local");
+  // Separate development agents use a separate ignored file. Never write
+  // credentials into an arbitrary (possibly tracked) destination.
+  if (dirname(envPath) !== resolve(".") || !/^\.env\.[A-Za-z0-9_-]+$/.test(basename(envPath)) || basename(envPath) === ".env.example") {
+    throw new Error("Use a private repository-root .env.<name> file, excluding .env.example.");
+  }
+  config({ path: envPath, quiet: true, override: !!values["config-file"] });
   if (!values.origin || !values["voice-id"]) throw new Error("Pass --origin https://your-sift-host and --voice-id for an available, licensed voice. Add --apply to provision.");
   const origin = new URL(values.origin).origin;
   const draft = buildElevenAgentConfig({ origin: values.origin, voiceId: values["voice-id"], secretId: "pending", webhookId: "pending" });
@@ -25,6 +31,10 @@ async function run() {
     console.log(`Ready to configure ${draft.name}: private WebRTC, Sift callback, and usage webhook. No changes made. Pass --apply to continue.`);
     return;
   }
+  let contents: string;
+  try { contents = await readFile(envPath, "utf8"); }
+  catch { throw new Error("Create the selected private environment file with ELEVENLABS_API_KEY before provisioning."); }
+  await chmod(envPath, 0o600);
   const { ELEVENLABS_API_KEY } = requireConfig(["ELEVENLABS_API_KEY"]);
   const request = async (path: string, method = "GET", body?: unknown): Promise<unknown> => {
     let response: Response;
@@ -109,16 +119,19 @@ async function run() {
     throw new Error("The Sift agent does not match the required private callback configuration. Review provider defaults/configuration before enabling voice.");
   }
   if (!state.webhookSecret) throw new Error("The webhook signing secret is missing from setup state; recover it before enabling voice.");
-  const envPath = resolve(".env.local");
-  let contents = await readFile(envPath, "utf8");
-  for (const [key, value] of Object.entries({ ELEVENLABS_AGENT_ID: state.agentId, ELEVENLABS_LLM_SECRET: state.llmSecret, ELEVENLABS_WEBHOOK_SECRET: state.webhookSecret })) {
+  if (await readFile(envPath, "utf8") !== contents) {
+    throw new Error("The selected environment file changed during setup. Provider resources were saved in recovery state; rerun to verify before updating configuration.");
+  }
+  for (const [key, value] of Object.entries({ ELEVENLABS_AGENT_ID: state.agentId, ELEVENLABS_LLM_SECRET: state.llmSecret, ELEVENLABS_WEBHOOK_SECRET: state.webhookSecret,
+    ...(values["config-file"] ? { ELEVENLABS_CALLBACK_ORIGIN: origin } : {}),
+  })) {
     const line = `${key}=${JSON.stringify(value)}`;
     const pattern = new RegExp(`^${key}=.*$`, "m");
     contents = pattern.test(contents) ? contents.replace(pattern, () => line) : `${contents.trimEnd()}\n${line}\n`;
   }
   const tempEnv = `${envPath}.elevenlabs.tmp`;
   await writeFile(tempEnv, contents, { mode: 0o600 }); await chmod(tempEnv, 0o600); await rename(tempEnv, envPath);
-  console.log("Private Sift voice agent and usage webhook verified. Configuration saved in .env.local and .local with private permissions. Add the four ELEVENLABS variables to the matching Vercel environment, then redeploy. No credentials were printed.");
+  console.log(`Private Sift voice agent and usage webhook verified. Configuration saved in ${basename(envPath)} and .local with private permissions. Use these credentials only with the app/database behind this callback origin. No credentials were printed.`);
 }
 
 try { await run(); }

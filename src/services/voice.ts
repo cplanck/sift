@@ -1,10 +1,10 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { isToolUIPart, type LanguageModel } from "ai";
 import { z } from "zod";
 import type { Database, Executor } from "@/db/connection";
-import { sessions, users, voiceSessions, voiceTurns } from "@/db/schema";
+import { conversations, conversationToolCalls, conversationTurns, sessions, users, voiceSessions, voiceTurns } from "@/db/schema";
 import { DomainError } from "@/domain/errors";
 import type { ClientPageContext } from "@/domain/assistant";
 import { voiceCallbackSchema, voiceHeartbeatSeconds, voiceSessionMinutes, voiceStartSchema, voiceUpdateSchema, type VoiceSessionInfo } from "@/domain/voice";
@@ -13,13 +13,16 @@ import { assistantVoiceResponse } from "@/ai/assistant-runtime";
 import { prepareAssistantModel } from "@/ai/models";
 import { createVoiceStreamResponse } from "@/ai/voice-stream";
 import { createElevenVoiceToken } from "@/voice/elevenlabs";
-import { abortConversationTurn, getConversation } from "./conversations";
+import { abortConversationTurn, getConversation, recordConversationNotice } from "./conversations";
 import { consumeLimit } from "./rate-limit";
 import { resolveGatewayCredential } from "./credentials";
 import { assertMembership, type Actor } from "./workspaces";
 
 type Session = typeof voiceSessions.$inferSelect;
 const endedMessage = "This voice connection has ended. Start voice again, or continue in text.";
+const revisedSavedMessage = "I heard your clarification. Part of that request is already saved, so I haven’t repeated or undone it. Review the saved changes in Sift before asking for any further changes.";
+const revisedApprovalMessage = "I heard your clarification. The earlier action still needs your review. Approve or decline its confirmation in Sift before continuing; I haven’t changed that action.";
+const revisedReviewedMessage = "I heard your clarification. That request already has a reviewed action, so I haven’t repeated it. Review the conversation in Sift before asking for any further changes.";
 const actorFor = (row: Session): Actor => ({ userId: row.userId, workspaceId: row.workspaceId });
 const scope = (actor: Actor, id: string) => and(eq(voiceSessions.id, id), eq(voiceSessions.userId, actor.userId), eq(voiceSessions.workspaceId, actor.workspaceId));
 const snapshot = (row: Session): VoiceSessionInfo => ({ id: row.id, conversationId: row.conversationId, providerConversationId: row.providerConversationId, status: row.status, revision: row.revision, expiresAt: row.expiresAt.toISOString() });
@@ -153,11 +156,17 @@ export async function respondToVoice(db: Database, providerConversationId: strin
   const actor = actorFor(row);
   const [previous] = await db.select().from(voiceTurns).where(and(eq(voiceTurns.voiceSessionId, row.id), eq(voiceTurns.fingerprint, parsed.fingerprint)));
   if (previous) {
-    if (previous.fingerprint !== row.lastFingerprint || previous.userCount !== row.lastUserCount || previous.status === "aborted") {
-      throw new DomainError("CONFLICT", "That voice reply was interrupted or superseded. Check the conversation before continuing.");
-    }
-    if (previous.responseText !== null && previous.status !== "running") return replayResponse(previous.responseText, previous.id);
-    throw new DomainError("CONFLICT", "That voice request was already received. Check the conversation before repeating it.");
+    return db.transaction(async (tx) => {
+      const [current] = await tx.select().from(voiceSessions).where(eq(voiceSessions.id, row.id)).for("update");
+      if (!current) throw new DomainError("UNAUTHENTICATED", endedMessage);
+      await assertLive(tx, current);
+      const [saved] = await tx.select().from(voiceTurns).where(eq(voiceTurns.id, previous.id));
+      if (!saved || saved.fingerprint !== current.lastFingerprint || saved.userCount !== current.lastUserCount || saved.status === "aborted") {
+        throw new DomainError("CONFLICT", "That voice reply was interrupted or superseded. Check the conversation before continuing.");
+      }
+      if (saved.responseText !== null && saved.status !== "running") return replayResponse(saved.responseText, saved.id);
+      throw new DomainError("CONFLICT", "That voice request was already received. Check the conversation before repeating it.");
+    });
   }
   const requestId = randomUUID();
   const context = { ...row.context };
@@ -165,18 +174,64 @@ export async function respondToVoice(db: Database, providerConversationId: strin
   // version per turn; a previous voice edit may precede the browser refresh.
   // Cooking still resolves its immutable version through the retained session ID.
   delete context.activeRecipeVersionId;
-  return assistantVoiceResponse(db, actor, { conversationId: row.conversationId!, requestId, context, message: { id: randomUUID(), text: parsed.text } }, {
+  // This server ID also links the accepted transcription to its voice turn.
+  const request = { conversationId: row.conversationId!, requestId, context, message: { id: requestId, text: parsed.text } };
+  return assistantVoiceResponse(db, actor, request, {
     ...options,
     beginTurn: (begin) => db.transaction(async (tx) => {
       const [current] = await tx.select().from(voiceSessions).where(eq(voiceSessions.id, row.id)).for("update");
       if (!current) throw new DomainError("UNAUTHENTICATED", endedMessage);
       await assertLive(tx, current);
       if (current.revision !== row.revision) throw new DomainError("CONFLICT", "The page changed while voice was starting a reply. Try again.");
-      if (parsed.userMessages.length <= current.lastUserCount || parsed.providerTurn < current.lastProviderTurn
-        || (current.lastFingerprint && fingerprint(parsed.userMessages.slice(0, current.lastUserCount)) !== current.lastFingerprint)) {
+      // Recheck under the reservation lock: simultaneous retries may both have
+      // missed the initial lookup, but only one can create a model run.
+      const [duplicate] = await tx.select().from(voiceTurns).where(and(eq(voiceTurns.voiceSessionId, current.id), eq(voiceTurns.fingerprint, parsed.fingerprint)));
+      if (duplicate) {
+        if (duplicate.fingerprint === current.lastFingerprint && duplicate.status !== "running" && duplicate.status !== "aborted" && duplicate.responseText !== null) return replayResponse(duplicate.responseText, duplicate.id);
+        throw new DomainError("CONFLICT", "That voice request was already received. Check the conversation before repeating it.");
+      }
+      const revising = parsed.userMessages.length === current.lastUserCount && !!current.lastFingerprint;
+      if (parsed.userMessages.length < current.lastUserCount || parsed.providerTurn < current.lastProviderTurn
+        || (!revising && current.lastFingerprint && fingerprint(parsed.userMessages.slice(0, current.lastUserCount)) !== current.lastFingerprint)) {
         throw new DomainError("CONFLICT", "This voice request is out of order. Reconnect voice to continue safely.");
       }
-      if (current.activeRunId) await abortConversationTurn(tx, actor, current.conversationId!, current.activeRunId);
+      if (revising) {
+        const [previous] = await tx.select().from(voiceTurns).where(and(eq(voiceTurns.voiceSessionId, current.id), eq(voiceTurns.fingerprint, current.lastFingerprint!)));
+        const [conversation] = await tx.select().from(conversations).where(and(eq(conversations.id, current.conversationId!), eq(conversations.createdByUserId, actor.userId), eq(conversations.workspaceId, actor.workspaceId))).for("update");
+        const [latest] = await tx.select({ id: conversationTurns.id }).from(conversationTurns).where(eq(conversationTurns.conversationId, current.conversationId!))
+          .orderBy(desc(conversationTurns.createdAt), desc(conversationTurns.id)).limit(1);
+        const previousUser = conversation?.messages.findLast((message) => message.role === "user");
+        // Older sessions used a separate user-message ID. Their last saved user
+        // text is usable only while its exact mapped voice run remains latest.
+        const previousText = previousUser?.parts.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+        if (!previous?.runId || !conversation || !previousUser || !previousText || latest?.id !== previous.runId
+          || fingerprint([...parsed.userMessages.slice(0, -1), previousText]) !== current.lastFingerprint
+          || (conversation.activeRunId && conversation.activeRunId !== current.activeRunId)) {
+          throw new DomainError("CONFLICT", "This voice request is out of order. Reconnect voice to continue safely.");
+        }
+        if (current.activeRunId) await abortConversationTurn(tx, actor, current.conversationId!, current.activeRunId);
+        // The conversation lock is also the tool journal's commit boundary.
+        // Check the entire revision chain, not just the most recent attempt.
+        const [committed] = await tx.select({ id: conversationToolCalls.id }).from(conversationToolCalls)
+          .innerJoin(voiceTurns, eq(voiceTurns.runId, conversationToolCalls.runId))
+          .where(and(eq(voiceTurns.voiceSessionId, current.id), eq(voiceTurns.userCount, current.lastUserCount))).limit(1);
+        const pendingApproval = conversation.messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested"));
+        const priorUserIndex = conversation.messages.findIndex((message) => message.id === previousUser.id);
+        const protectedApproval = conversation.messages.slice(priorUserIndex).some((message) => message.parts.some((part) => isToolUIPart(part) && "approval" in part && !!part.approval));
+        await tx.update(voiceTurns).set({ status: "aborted", finishedAt: new Date() }).where(and(eq(voiceTurns.voiceSessionId, current.id), eq(voiceTurns.status, "running")));
+        if (committed || pendingApproval || protectedApproval) {
+          const text = pendingApproval ? revisedApprovalMessage : protectedApproval ? revisedReviewedMessage : revisedSavedMessage;
+          const notice = await recordConversationNotice(tx, actor, request, text);
+          await tx.insert(voiceTurns).values({ id: requestId, voiceSessionId: current.id, fingerprint: parsed.fingerprint, providerTurn: parsed.providerTurn,
+            userCount: parsed.userMessages.length, runId: notice.runId, status: "completed", responseText: text, requiresApproval: pendingApproval, finishedAt: new Date() });
+          await tx.update(voiceSessions).set({ activeRunId: null, lastUserCount: parsed.userMessages.length, lastProviderTurn: parsed.providerTurn, lastFingerprint: parsed.fingerprint, updatedAt: new Date() }).where(eq(voiceSessions.id, current.id));
+          return replayResponse(text, requestId);
+        }
+        // Replace only the superseded transcription. Keep partial assistant and
+        // read-only tool history; ordinary begin appends the full revised input.
+        await tx.update(conversations).set({ messages: conversation.messages.filter((message) => message.id !== previousUser.id), updatedAt: new Date() }).where(eq(conversations.id, conversation.id));
+      }
+      if (!revising && current.activeRunId) await abortConversationTurn(tx, actor, current.conversationId!, current.activeRunId);
       await tx.update(voiceTurns).set({ status: "aborted", finishedAt: new Date() }).where(and(eq(voiceTurns.voiceSessionId, row.id), eq(voiceTurns.status, "running")));
       await tx.insert(voiceTurns).values({ id: requestId, voiceSessionId: row.id, fingerprint: parsed.fingerprint, providerTurn: parsed.providerTurn, userCount: parsed.userMessages.length, status: "running" });
       const run = await begin(tx);
