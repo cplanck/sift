@@ -7,7 +7,7 @@ const optional = <T extends z.ZodType>(schema: T) => z.preprocess(
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  BETTER_AUTH_URL: z.url().default("http://localhost:3000"),
+  BETTER_AUTH_URL: z.url().default("http://localhost:3003"),
   BETTER_AUTH_SECRET: optional(z.string().min(32)),
   DATABASE_URL: optional(z.url().refine((value) => /^postgres(ql)?:/.test(value))),
   AI_GATEWAY_API_KEY: optional(z.string().min(1)),

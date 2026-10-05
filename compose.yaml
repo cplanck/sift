@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: sift-postgres
+    environment:
+      POSTGRES_USER: sift
+      POSTGRES_PASSWORD: sift-local-only
+      POSTGRES_DB: sift
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - sift-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sift"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  sift-postgres:
