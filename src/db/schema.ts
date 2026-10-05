@@ -1,5 +1,6 @@
-import { bigint, boolean, foreignKey, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { bigint, boolean, foreignKey, index, integer, jsonb, numeric, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 import type { RecipeContent, RecipeSource } from "@/domain/recipe";
+import type { UIMessage } from "ai";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
 const updatedAt = () => timestamp("updated_at", { withTimezone: true }).defaultNow().notNull();
@@ -152,3 +153,49 @@ export const usageLimits = pgTable("usage_limits", {
   key: text("key").primaryKey(), userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   count: integer("count").default(1).notNull(), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 }, (table) => [index("usage_limits_expires_idx").on(table.expiresAt)]);
+
+export const gatewayCredentials = pgTable("gateway_credentials", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  provider: text("provider").notNull().default("vercel-ai-gateway"),
+  encryptedSecret: text("encrypted_secret").notNull(), hint: text("hint").notNull(),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [uniqueIndex("gateway_credentials_user_provider_idx").on(table.userId, table.provider)]);
+
+export const conversations = pgTable("conversations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  title: text("title").notNull(), messages: jsonb("messages").$type<UIMessage[]>().notNull().default([]),
+  activeRunId: uuid("active_run_id"), leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+  lastError: text("last_error"), createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [index("conversations_workspace_user_idx").on(table.workspaceId, table.createdByUserId, table.updatedAt)]);
+
+export const conversationTurns = pgTable("conversation_turns", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  conversationId: uuid("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  requestId: uuid("request_id").notNull(),
+  status: text("status", { enum: ["running", "completed", "failed", "aborted"] }).notNull(),
+  createdAt: createdAt(), finishedAt: timestamp("finished_at", { withTimezone: true }),
+}, (table) => [uniqueIndex("conversation_turns_request_idx").on(table.conversationId, table.requestId)]);
+
+export const conversationToolCalls = pgTable("conversation_tool_calls", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  conversationId: uuid("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  runId: uuid("run_id").notNull().references(() => conversationTurns.id, { onDelete: "cascade" }),
+  toolCallId: text("tool_call_id").notNull(), toolName: text("tool_name").notNull(),
+  result: jsonb("result").$type<unknown>().notNull(), createdAt: createdAt(),
+}, (table) => [uniqueIndex("conversation_tool_calls_call_idx").on(table.conversationId, table.toolCallId)]);
+
+export const aiUsage = pgTable("ai_usage", {
+  id: uuid("id").defaultRandom().primaryKey(), idempotencyKey: text("idempotency_key").notNull().unique(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: uuid("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+  runId: uuid("run_id").references(() => conversationTurns.id, { onDelete: "set null" }),
+  importId: uuid("import_id").references(() => recipeImports.id, { onDelete: "set null" }),
+  model: text("model").notNull(), credentialSource: text("credential_source", { enum: ["user", "app"] }).notNull(),
+  inputTokens: integer("input_tokens"), outputTokens: integer("output_tokens"), totalTokens: integer("total_tokens"),
+  costUsd: numeric("cost_usd", { precision: 20, scale: 10 }), generationId: text("generation_id"),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [index("ai_usage_workspace_user_idx").on(table.workspaceId, table.userId, table.createdAt), index("ai_usage_conversation_idx").on(table.conversationId)]);

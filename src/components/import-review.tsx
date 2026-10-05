@@ -8,11 +8,13 @@ import { api } from "@/lib/client-http";
 import { RecipeForm } from "./recipe-form";
 import { RecipeSourceInfo } from "./recipe-source";
 import { Button } from "./ui/button";
+import { useAssistantPage } from "./assistant-shell";
 
 type Review = Awaited<ReturnType<typeof importReview>>;
 export function ImportReview({ initial }: { initial: Review }) {
   const [review, setReview] = useState(initial), [error, setError] = useState("");
   const router = useRouter();
+  useAssistantPage({ route: `/imports/${review.id}`, activeRecipeId: review.recipe?.id, activeRecipeVersionId: review.recipe?.version.id, title: review.recipe?.version.content.title ?? "Importing a recipe" });
   useEffect(() => {
     if (review.status === "saved" && review.recipe) { router.replace(`/recipes/${review.recipe.id}`); return; }
     if (!["queued", "processing"].includes(review.status)) return;

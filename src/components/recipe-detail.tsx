@@ -9,6 +9,7 @@ import { RecipePhotos } from "./recipe-photos";
 import { RecipeThumbnail } from "./recipe-thumbnail";
 import { RecipeSourceInfo } from "./recipe-source";
 import { ShareRecipe } from "./share-recipe";
+import { useAssistantPage } from "./assistant-shell";
 import { scaleIngredient } from "@/domain/scaling";
 import { api } from "@/lib/client-http";
 import { FavoriteButton } from "./favorite-button";
@@ -25,6 +26,7 @@ type Versions = Awaited<ReturnType<typeof listVersions>>;
 
 export function RecipeDetail({ recipe, notes, versions, photos }: { recipe: Recipe; notes: Notes; versions: Versions; photos: Awaited<ReturnType<typeof listRecipePhotos>> }) {
   const content = recipe.version.content;
+  useAssistantPage({ route: `/recipes/${recipe.id}`, activeRecipeId: recipe.id, activeRecipeVersionId: recipe.version.id, title: content.title });
   const [servings, setServings] = useState(content.servings), [dialog, setDialog] = useState<"rename" | "archive" | null>(null), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const router = useRouter();
   const mutate = async (body: unknown) => {

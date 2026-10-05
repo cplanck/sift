@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@ai-sdk/gateway": "4.0.103",
+    "@ai-sdk/react": "4.0.130",
     "@aws-sdk/client-s3": "3.1146.0",
     "@aws-sdk/s3-request-presigner": "3.1146.0",
     "@better-auth/drizzle-adapter": "1.7.7",

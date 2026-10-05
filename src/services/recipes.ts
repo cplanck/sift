@@ -85,12 +85,17 @@ export async function restoreVersion(db: Database, actor: Actor, id: string, inp
   return updateRecipe(db, actor, id, { content: version.content, expectedVersionId: data.expectedVersionId, changeSummary: `Restored version ${version.number}` });
 }
 
-export async function setRecipeStatus(db: Database, actor: Actor, id: string, input: unknown) {
+export async function setRecipeStatus(db: Database, actor: Actor, id: string, input: unknown, expectedVersionId?: string) {
   const status = z.enum(["active", "archived"]).parse(input);
-  const current = await scopedRecipe(db, actor, id);
-  if (current.status === "draft") throw new DomainError("INVALID_INPUT", "Review and approve the import before changing its Library status.");
-  const [recipe] = await db.update(recipes).set({ status, updatedAt: new Date(), updatedByUserId: actor.userId }).where(recipeScope(actor, id)).returning();
-  return recipe;
+  if (expectedVersionId) z.uuid().parse(expectedVersionId);
+  return db.transaction(async (tx) => {
+    await scopedRecipe(tx, actor, id);
+    const [current] = await tx.select().from(recipes).where(recipeScope(actor, id)).for("update");
+    if (current.status === "draft") throw new DomainError("INVALID_INPUT", "Review and approve the import before changing its Library status.");
+    if (expectedVersionId && current.currentVersionId !== expectedVersionId) throw new DomainError("CONFLICT", "This recipe changed. Review its current version before changing its status.");
+    const [recipe] = await tx.update(recipes).set({ status, updatedAt: new Date(), updatedByUserId: actor.userId }).where(recipeScope(actor, id)).returning();
+    return recipe;
+  });
 }
 
 // Called by the reviewed import workflow inside its transaction, after corrections

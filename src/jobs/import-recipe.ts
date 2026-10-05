@@ -25,18 +25,19 @@ export const importRecipeJob = inngest.createFunction({
     const db = database(), { record, actor } = await importForJob(db, importId);
     if (record.recipeId) return { recipeId: record.recipeId };
     try {
+      const extractionContext = { db, actor, importId };
       let content, source;
       if (record.kind === "url") {
         const page = await fetchRecipeUrl(record.sourceUrl!);
         const extracted = extractRecipeHtml(page.html);
-        content = extracted.content ?? await extractRecipe({ text: extracted.text });
+        content = extracted.content ?? await extractRecipe({ text: extracted.text }, extractionContext);
         source = { type: "url" as const, url: page.url, name: new URL(page.url).hostname, rawText: extracted.text, importedAt: new Date().toISOString() };
       } else if (record.kind === "image") {
         const photo = await getPhoto(db, actor, record.photoId!);
-        content = await extractRecipe({ image: await readPhotoObject(photo.objectKey), mediaType: photo.contentType });
+        content = await extractRecipe({ image: await readPhotoObject(photo.objectKey), mediaType: photo.contentType }, extractionContext);
         source = { type: "image" as const, name: "Recipe photo", importedAt: new Date().toISOString() };
       } else {
-        content = parsePastedRecipe(record.rawText!) ?? await extractRecipe({ text: record.rawText! });
+        content = parsePastedRecipe(record.rawText!) ?? await extractRecipe({ text: record.rawText! }, extractionContext);
         source = { type: "paste" as const, rawText: record.rawText!, importedAt: new Date().toISOString() };
       }
       const recipeId = await saveExtractedImport(db, actor, importId, content, source);

@@ -20,7 +20,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     {/* eslint-disable-next-line @next/next/no-sync-scripts */}
     {process.env.NODE_ENV === "development" && <script src="/dev-reset.js" />}
   </head><body className="min-h-dvh antialiased">
-    <a href="#main" className="fixed left-4 top-4 z-50 -translate-y-24 rounded-xl bg-foreground p-3 text-background focus:translate-y-0">Skip to content</a>
+    <a href="#main" className="sr-only rounded-xl bg-foreground p-3 text-background focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50">Skip to content</a>
     <Providers>{children}</Providers>
   </body></html>;
 }
