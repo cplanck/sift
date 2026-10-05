@@ -14,7 +14,11 @@ export async function prepareTestDatabase() {
     if (!(await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [name])).rowCount) await admin.query(`CREATE DATABASE "${name}"`);
   } finally { await admin.end(); }
   const connection = connectDatabase(testDatabaseUrl);
-  try { await migrate(connection.db, { migrationsFolder: "drizzle" }); }
+  try {
+    await migrate(connection.db, { migrationsFolder: "drizzle" });
+    // Reset only auth throttle counters in the dedicated test database between runs.
+    await connection.pool.query("TRUNCATE rate_limits");
+  }
   finally { await connection.pool.end(); }
 }
 export default prepareTestDatabase;

@@ -1,0 +1,59 @@
+import { expect, test } from "@playwright/test";
+
+test("create, search, scale, note, version, restore, favorite and isolate recipes", async ({ page, browser }, testInfo) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  const email = `recipes-${crypto.randomUUID()}@example.test`;
+  const signup = await page.request.post("/api/auth/sign-up/email", { data: { name: "Sam", email, password: "a-good-test-password-42" }, headers: { Origin: "http://localhost:3100" } });
+  expect(signup.ok()).toBe(true);
+  await page.goto("/library");
+  await page.getByRole("link", { name: "Add recipe", exact: true }).click();
+  await page.getByLabel("Recipe title", { exact: true }).fill("Turkey Chili");
+  await page.getByLabel("Ingredients", { exact: true }).fill("[Chili]\n½ cup broth\n1 14-oz can beans\n2–3 tbsp oil");
+  await page.getByLabel("Instructions", { exact: true }).fill("Simmer for twenty minutes.\nTaste and serve.");
+  await page.getByLabel("Tags", { exact: false }).fill("Weeknight");
+  await page.getByRole("button", { name: "Save recipe", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Turkey Chili", exact: true })).toBeVisible();
+  const recipeUrl = page.url(), recipeId = recipeUrl.split("/").at(-1);
+  await page.getByLabel("Servings", { exact: true }).fill("8");
+  await expect(page.getByText("1 cup broth", { exact: true })).toBeVisible();
+  await expect(page.getByText("2 14-oz can beans", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await page.getByLabel("Recipe note").fill("This needed more salt.");
+  await page.getByRole("button", { name: "Add note", exact: true }).click();
+  await expect(page.getByText("This needed more salt.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Recipe options" }).click();
+  await page.getByRole("menuitem", { name: "Rename recipe" }).click();
+  await page.getByLabel("Recipe title", { exact: true }).fill("Smoky Turkey Chili");
+  await page.getByRole("button", { name: "Save title" }).click();
+  await expect(page.getByRole("heading", { name: "Smoky Turkey Chili", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "History", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Version 2 Current" })).toBeVisible();
+  await page.getByRole("button", { name: "Restore version 1", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Turkey Chili", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Add to favorites" }).click();
+  await expect(page.getByRole("button", { name: "Remove from favorites" })).toBeVisible();
+  await page.route("**/api/recipes/*/actions", (route) => route.abort());
+  await page.getByRole("button", { name: "Remove from favorites" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Favorite wasn’t saved" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove from favorites" })).toBeVisible();
+  await page.unroute("**/api/recipes/*/actions");
+  await page.getByRole("link", { name: "All recipes", exact: true }).click();
+  await page.getByLabel("Search recipes", { exact: true }).fill("tu");
+  await expect(page.getByRole("heading", { name: "Turkey Chili", exact: true })).toBeVisible();
+  await page.getByLabel("Search recipes", { exact: true }).fill("nothing-like-this");
+  await expect(page.getByText("No recipes found.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Clear search" }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: `test-results/library-${testInfo.project.name}.png`, fullPage: true });
+  await page.goto(recipeUrl);
+  await expect(page.getByRole("heading", { name: "Turkey Chili", exact: true })).toBeVisible();
+  await page.screenshot({ path: `test-results/recipe-${testInfo.project.name}.png`, fullPage: true });
+
+  const other = await browser.newContext();
+  try {
+    await other.request.post("http://localhost:3100/api/auth/sign-up/email", { data: { name: "Other", email: `other-${crypto.randomUUID()}@example.test`, password: "a-good-test-password-42" }, headers: { Origin: "http://localhost:3100" } });
+    expect((await other.request.get(`http://localhost:3100/api/recipes/${recipeId}`)).status()).toBe(404);
+    expect((await other.request.post(`http://localhost:3100/api/recipes/${recipeId}/actions`, { data: { action: "note", body: "intrusion" }, headers: { Origin: "http://localhost:3100" } })).status()).toBe(404);
+  } finally { await other.close(); }
+  expect((await page.request.post(`/api/recipes/${recipeId}/actions`, { data: { action: "favorite", favorite: false }, headers: { Origin: "https://other.example" } })).status()).toBe(400);
+});

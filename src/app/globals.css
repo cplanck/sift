@@ -4,21 +4,21 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #faf9f6;
-  --foreground: #1c1c1a;
-  --muted: #eeede8;
-  --muted-foreground: #66665f;
-  --border: #ddddd5;
-  --ring: #68745e;
+  --background: #fafafa;
+  --foreground: #171919;
+  --muted: #f0f1f1;
+  --muted-foreground: #606565;
+  --border: #dfe2e2;
+  --ring: #747c7c;
   --destructive: #b63b32;
 }
 .dark {
-  --background: #141513;
-  --foreground: #f4f3ed;
-  --muted: #22231f;
-  --muted-foreground: #a5a69b;
-  --border: #35372f;
-  --ring: #b0be9b;
+  --background: #0d1010;
+  --foreground: #f5f6f6;
+  --muted: #1c2020;
+  --muted-foreground: #a4adad;
+  --border: #2a3030;
+  --ring: #bdc8c8;
   --destructive: #c4554b;
 }
 @theme inline {
@@ -29,6 +29,17 @@
   --color-border: var(--border);
   --color-ring: var(--ring);
   --color-destructive: var(--destructive);
+  --color-primary: var(--foreground);
+  --color-primary-foreground: var(--background);
+  --color-secondary: var(--muted);
+  --color-secondary-foreground: var(--foreground);
+  --color-accent: var(--muted);
+  --color-accent-foreground: var(--foreground);
+  --color-popover: var(--background);
+  --color-popover-foreground: var(--foreground);
+  --color-card: var(--background);
+  --color-card-foreground: var(--foreground);
+  --color-input: var(--border);
   --font-sans: "Inter Variable", sans-serif;
 }
 * { border-color: var(--border); }

@@ -1,4 +1,5 @@
-import { bigint, boolean, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { bigint, boolean, foreignKey, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import type { RecipeContent, RecipeSource } from "@/domain/recipe";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
 const updatedAt = () => timestamp("updated_at", { withTimezone: true }).defaultNow().notNull();
@@ -59,3 +60,49 @@ export const workspaceMembers = pgTable("workspace_members", {
 }, (table) => [primaryKey({ columns: [table.workspaceId, table.userId] }), index("workspace_members_user_idx").on(table.userId)]);
 
 export const authSchema = { user: users, session: sessions, account: accounts, verification: verifications, rateLimit: rateLimits };
+
+export const recipeStatus = pgEnum("recipe_status", ["draft", "active", "archived"]);
+export const recipes = pgTable("recipes", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  currentVersionId: uuid("current_version_id").references((): AnyPgColumn => recipeVersions.id),
+  status: recipeStatus("status").default("draft").notNull(),
+  source: jsonb("source").$type<RecipeSource>().notNull(),
+  coverPhotoId: uuid("cover_photo_id"),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedByUserId: uuid("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [uniqueIndex("recipes_workspace_id_idx").on(table.workspaceId, table.id), index("recipes_workspace_status_idx").on(table.workspaceId, table.status, table.updatedAt)]);
+
+export const recipeVersions = pgTable("recipe_versions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  recipeId: uuid("recipe_id").notNull(), number: integer("number").notNull(),
+  content: jsonb("content").$type<RecipeContent>().notNull(),
+  changeSummary: text("change_summary").notNull(),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+}, (table) => [
+  foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "recipe_versions_workspace_recipe_fk" }).onDelete("cascade"),
+  uniqueIndex("recipe_versions_number_idx").on(table.recipeId, table.number),
+  index("recipe_versions_workspace_recipe_idx").on(table.workspaceId, table.recipeId),
+]);
+
+export const recipeNotes = pgTable("recipe_notes", {
+  id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull(), recipeId: uuid("recipe_id").notNull(),
+  body: text("body").notNull(), createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+}, (table) => [
+  foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "recipe_notes_workspace_recipe_fk" }).onDelete("cascade"),
+  index("recipe_notes_workspace_recipe_idx").on(table.workspaceId, table.recipeId),
+]);
+
+export const recipeFavorites = pgTable("recipe_favorites", {
+  workspaceId: uuid("workspace_id").notNull(), recipeId: uuid("recipe_id").notNull(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: createdAt(),
+}, (table) => [
+  primaryKey({ columns: [table.recipeId, table.userId] }),
+  foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "recipe_favorites_workspace_recipe_fk" }).onDelete("cascade"),
+  index("recipe_favorites_workspace_user_idx").on(table.workspaceId, table.userId),
+]);

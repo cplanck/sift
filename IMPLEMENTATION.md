@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-M1 — Persistence/auth complete. M0 committed (`70aa08e`). Next milestone: M2.
+M2 — Recipe domain complete. M0 committed (`70aa08e`), M1 committed (`f2f0857`). Next milestone: M3.
 
 ## Completed work
 
@@ -13,6 +13,9 @@ M1 — Persistence/auth complete. M0 committed (`70aa08e`). Next milestone: M2.
 - Central environment validation that never puts secret values in error messages.
 - Lint, typecheck, Vitest, production build and Playwright commands.
 - M1: Better Auth email/password registration, sign-in and sign-out; protected Library; PostgreSQL schema and migrations; personal workspace creation serialized in a transaction; membership authorization primitives; real PostgreSQL integration tests.
+- M2: structured ingredient/instruction sections, lossless quantity text and deterministic scaling, canonical recipe snapshots, immutable version creation and restoration, optimistic favorites with rollback, first-class notes, archive/restore, direct title correction, and instant ranked Library search.
+- Reviewed the user-supplied `reference-ui.png`. Applied its charcoal surfaces, search prominence, recent strip, compact recipe list, tabs and restrained controls. Photo-led presentation will use uploaded media in M3; no fabricated recipe content or photo integrations.
+- Installed official shadcn/ui Button, Input, Textarea, Dialog, Sheet, Tabs and DropdownMenu from the registry. Customized neutral theme tokens and touch-target sizes locally. Fixed the registry's generated `cn` import to use the configured local utility.
 
 ## Architectural decisions
 
@@ -24,6 +27,9 @@ M1 — Persistence/auth complete. M0 committed (`70aa08e`). Next milestone: M2.
 - Drizzle uses `pg` over PostgreSQL TCP for both Neon and local development, as supported by [Drizzle's Neon documentation](https://orm.drizzle.team/docs/connect-neon). Interactive transactions are required for bootstrap and later versioning. Production uses the Neon pooled connection string with TLS; local tests use isolated PostgreSQL 17, not an in-memory substitute.
 - UUIDs throughout, timezone-aware UTC timestamps, membership indexes and foreign keys. User creation invokes transactional personal-workspace bootstrap; authenticated entry repairs an interrupted initial bootstrap idempotently. Removed memberships are never silently recreated.
 - Better Auth owns session/password handling and database-backed auth rate limits. API and server-page boundaries derive identity from the session; each domain operation independently checks membership. Active-workspace metadata is not client-writable.
+- Canonical recipe content is a validated JSONB snapshot on each version; source provenance and lifecycle live on the parent recipe. Updates lock the parent and compare the expected version to prevent lost edits. Restore appends a new version. Notes/favorites never create canonical versions.
+- Library receives a compact workspace-scoped index for immediate client-side search. UI and server use the same exact/prefix/substring/tag/ingredient/note ranking. Full-text/trigram infrastructure is not needed for a personal cookbook at this stage; there is no arbitrary truncation of the searchable Library.
+- Composite workspace/recipe foreign keys supplement service authorization. Reviewed M2's generated SQL and moved its supporting unique index before the dependent foreign keys (Drizzle emitted the reverse order).
 
 ## Deviations
 
@@ -50,8 +56,10 @@ M0 passed: `pnpm lint`, `pnpm typecheck`, `pnpm test` (2 tests), `pnpm build`, `
 
 M1 passed: lint, typecheck, 5 Vitest tests (including real PostgreSQL concurrency/isolation/revocation checks), production build, and all 9 Playwright checks. Signup/sign-in/sign-out and stable personal-workspace identity verified on desktop, phone and tablet. The dev sign-in page returns HTTP 200 on port 3003. Live Neon deployment is not yet exercised; the same PostgreSQL driver/migrations run locally.
 
+M2 passed: lint, typecheck, 21 Vitest tests, production build, and all 12 Playwright checks. Browser flows cover real recipe creation, prefix search, serving scaling, notes, version creation/restoration, favorite rollback on network failure, cross-user ID attacks, cross-origin mutation rejection, and desktop/phone/tablet layouts. Reviewed dark desktop Library and phone recipe screenshots; corrected the single-card recent-strip width.
+
 In the Codex sandbox, Next.js/Turbopack and browser tests need local process/network permissions. A failed sandbox build can cache its port-binding failure; clearing `.next` and rerunning with the necessary permissions resolved it. No bundler or architecture change was needed.
 
 ## Next steps
 
-Continue to M2 recipe domain, immutable versions, notes, deterministic search and Library/recipe views.
+Continue to M3 real ingestion, R2 media and unlisted sharing. M4–M9 remain unimplemented.
