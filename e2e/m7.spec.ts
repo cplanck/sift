@@ -29,6 +29,7 @@ test("unconfigured voice is truthful and keeps the existing text conversation av
   const conversations = await (await page.request.get("/api/conversations")).json() as { id: string }[];
   expect(conversations).toHaveLength(1);
   await page.getByRole("button", { name: "Talk to Sift", exact: true }).click();
+  await page.getByRole("button", { name: "Voice controls", exact: true }).click();
   const controls = page.getByRole("region", { name: "Sift voice", exact: true });
   await expect(controls.getByRole("alert")).toHaveText(configuration.message);
   await expect(controls.getByText("Listening", { exact: true })).toHaveCount(0);
@@ -64,6 +65,7 @@ test("cooking voice asks for permission only on tap, explains denial, and opens 
   expect(await page.evaluate(() => (window as MediaFixture).microphoneRequests)).toBe(0);
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   await page.getByRole("button", { name: "Talk to Sift", exact: true }).click();
+  await page.getByRole("button", { name: "Voice controls", exact: true }).click();
   const controls = page.getByRole("region", { name: "Sift voice", exact: true });
   await expect(controls.getByRole("alert")).toContainText("Microphone access is blocked");
   expect(await page.evaluate(() => (window as MediaFixture).microphoneRequests)).toBe(1);
@@ -72,7 +74,7 @@ test("cooking voice asks for permission only on tap, explains denial, and opens 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await controls.getByRole("button", { name: "Use text", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Message Sift", exact: true })).toBeEnabled();
-  await expect(page.getByText("Coffee for one · Cooking", { exact: true })).toBeVisible();
+  await expect(page.getByText("Coffee for one · Cooking", { exact: true })).toHaveText("Coffee for one · Cooking");
   await page.getByRole("button", { name: "Close Sift", exact: true }).click();
   await expect(page.getByRole("region", { name: "Current cooking step", exact: true })).toBeVisible();
 });
@@ -94,12 +96,15 @@ test("canceling microphone permission releases a late stream and never starts vo
   await page.goto("/library");
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   await page.getByRole("button", { name: "Talk to Sift", exact: true }).click();
+  await expect(page.getByRole("button", { name: "New conversation", exact: true })).toBeDisabled();
+  await expect(page.getByRole("textbox", { name: "Message Sift", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Voice controls", exact: true }).click();
   const controls = page.getByRole("region", { name: "Sift voice", exact: true });
   await expect(controls.getByRole("status")).toHaveText("Allow microphone access to begin");
   await expect(controls.getByRole("button", { name: "Mute", exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "New conversation", exact: true })).toBeDisabled();
-  await expect(page.getByRole("textbox", { name: "Message Sift", exact: true })).toHaveCount(0);
   await controls.getByRole("button", { name: "End voice", exact: true }).click();
+  await expect(controls.getByRole("status")).toHaveText("Voice is off");
+  await page.getByRole("dialog", { name: "Voice controls", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
   await expect(controls).toHaveCount(0);
   await page.evaluate(() => (window as MediaFixture).resolveMicrophone?.());
   await expect.poll(() => page.evaluate(() => (window as MediaFixture).microphoneStops)).toBe(1);
@@ -116,6 +121,7 @@ test("unsupported voice leaves text available without requesting a microphone", 
   await page.evaluate(() => { Object.defineProperty(window, "RTCPeerConnection", { configurable: true, value: undefined }); });
   expect(await page.evaluate(() => typeof window.RTCPeerConnection)).toBe("undefined");
   await page.getByRole("button", { name: "Talk to Sift", exact: true }).click();
+  await page.getByRole("button", { name: "Voice controls", exact: true }).click();
   const controls = page.getByRole("region", { name: "Sift voice", exact: true });
   await expect(controls.getByRole("alert")).toContainText("Voice isn’t supported in this browser");
   await controls.getByRole("button", { name: "Use text", exact: true }).click();

@@ -28,7 +28,7 @@ test("persistent Sift panel, real conversation CRUD, current recipe context, and
   await page.goto("/library");
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   const panel = page.getByRole("dialog", { name: "sift", exact: true });
-  await expect(panel.getByRole("heading", { name: "What’s cooking?", exact: true })).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "What sounds good?", exact: true })).toBeVisible();
   const conversationList = await (await page.request.get("/api/conversations")).json();
   expect(conversationList).toHaveLength(1);
   const conversationId: string = conversationList[0].id;
@@ -42,7 +42,7 @@ test("persistent Sift panel, real conversation CRUD, current recipe context, and
   await expect(page.getByRole("heading", { name: "Lemon Soup", level: 1, exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   await expect(panel.getByRole("textbox", { name: "Message Sift", exact: true })).toHaveValue(draft);
-  await expect(panel.getByText("Lemon Soup", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Lemon Soup", { exact: true })).toHaveText("Lemon Soup");
   await expect(panel.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
   await page.screenshot({ path: `test-results/assistant-panel-${testInfo.project.name}.png` });
   const requestPromise = page.waitForRequest((request) => request.url().endsWith("/api/assistant") && request.method() === "POST");
@@ -61,21 +61,22 @@ test("persistent Sift panel, real conversation CRUD, current recipe context, and
   const saved = await (await page.request.get(`/api/conversations/${conversationId}`)).json();
   expect(saved.messages).toEqual([]); // Missing configuration does not reserve or pretend to complete a turn.
   expect(saved.busy).toBe(false);
-  await panel.getByText("Conversation usage", { exact: true }).click();
-  await expect(panel.getByText("Not yet reported", { exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: "Conversation options", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Conversation usage", exact: true }).click();
+  const usage = page.getByRole("dialog", { name: "Conversation usage", exact: true });
+  await expect(usage.getByText("No model calls", { exact: true })).toBeVisible();
+  await usage.getByRole("button", { name: "Close", exact: true }).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 
   await panel.getByRole("button", { name: "Conversation options", exact: true }).click();
   await page.getByRole("menuitem", { name: "Rename conversation", exact: true }).click();
   await panel.getByLabel("Conversation title", { exact: true }).fill("Dinner ideas");
   await panel.getByRole("button", { name: "Save title", exact: true }).click();
-  await expect(panel.getByText("Dinner ideas", { exact: true })).toBeVisible();
   expect((await (await page.request.get(`/api/conversations/${conversationId}`)).json()).title).toBe("Dinner ideas");
   await panel.getByRole("button", { name: "New conversation", exact: true }).click();
   await expect(panel.getByRole("textbox", { name: "Message Sift", exact: true })).toHaveValue("");
   await panel.getByRole("button", { name: "Conversation history", exact: true }).click();
-  await panel.getByRole("button", { name: /Dinner ideas/ }).click();
-  await expect(panel.getByText("Dinner ideas", { exact: true })).toBeVisible();
+  await page.getByRole("menuitem", { name: /Dinner ideas/ }).click();
   await panel.getByRole("button", { name: "Conversation options", exact: true }).click();
   await page.getByRole("menuitem", { name: "Delete conversation", exact: true }).click();
   await panel.getByRole("button", { name: "Confirm delete", exact: true }).click();
@@ -91,8 +92,8 @@ test("personal Gateway settings encrypt keys, expose only masked status, and rem
   const settings = page.getByRole("dialog", { name: "Sift settings", exact: true });
   await expect(settings.getByLabel("Personal Gateway key", { exact: true })).toBeVisible();
   await settings.getByText("Recorded AI usage", { exact: true }).click();
-  await expect(settings.getByText(/Your usage in this cookbook, including imports and conversations/)).toBeVisible();
-  await expect(settings.getByText("Not yet reported", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Imports and conversations in this cookbook, including deleted chats.", { exact: true })).toBeVisible();
+  await expect(settings.getByText("No model calls", { exact: true })).toBeVisible();
   const usageResponse = await page.request.get("/api/usage");
   expect(usageResponse.headers()["cache-control"]).toContain("no-store");
   expect(await usageResponse.json()).toMatchObject({ calls: 0, reportedCostUsd: null });

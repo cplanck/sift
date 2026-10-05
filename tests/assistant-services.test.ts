@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import type { UIMessage } from "ai";
 import { connectDatabase } from "@/db/connection";
-import { aiUsage, conversations, conversationToolCalls, gatewayCredentials, recipes, users, workspaceMembers } from "@/db/schema";
+import { aiUsage, conversations, conversationToolCalls, conversationTurns, gatewayCredentials, recipes, users, voiceSessions, workspaceMembers } from "@/db/schema";
 import { assistantRequestSchema } from "@/domain/assistant";
 import { parsePastedRecipe } from "@/domain/import";
 import { decryptCredential, encryptCredential } from "@/lib/credential-crypto";
@@ -168,5 +168,49 @@ describe("provider-reported usage and cost ledger", () => {
     await deleteConversation(db, a, conversation.id);
     // Usage survives deleting a chat, so conversation cleanup cannot erase costs.
     expect(await db.select().from(aiUsage).where(eq(aiUsage.userId, a.userId))).toHaveLength(3);
+  });
+
+  it("attributes tool-loop calls to their actual turns without estimating missing reports or allocating voice charges", async () => {
+    const conversation = await createConversation(db, a);
+    const first = await beginConversationTurn(db, a, messageInput(conversation.id));
+    const base = { conversationId: conversation.id, credentialSource: "app" as const, model: "anthropic/test-model" };
+    await recordModelUsage(db, a, { ...base, runId: first.runId, idempotencyKey: `${first.runId}:1`, usage: { inputTokens: 10, outputTokens: 5 }, providerMetadata: { gateway: { cost: "0.1" } } });
+    await recordModelUsage(db, a, { ...base, runId: first.runId, idempotencyKey: `${first.runId}:2`, usage: { inputTokens: 12, outputTokens: 7 }, providerMetadata: { gateway: { cost: "0.2" } } });
+    await finishConversationTurn(db, a, conversation.id, first.runId, first.messages, "completed");
+    const second = await beginConversationTurn(db, a, messageInput(conversation.id));
+    await recordModelUsage(db, a, { ...base, runId: second.runId, idempotencyKey: `${second.runId}:1` });
+    await finishConversationTurn(db, a, conversation.id, second.runId, second.messages, "aborted");
+    const third = await beginConversationTurn(db, a, messageInput(conversation.id));
+    await finishConversationTurn(db, a, conversation.id, third.runId, third.messages, "completed");
+    await recordModelUsage(db, a, { ...base, idempotencyKey: `${conversation.id}:unassigned`, usage: { inputTokens: 2, outputTokens: 1 }, providerMetadata: { gateway: { cost: "0.05" } } });
+    await db.insert(voiceSessions).values({ workspaceId: a.workspaceId, userId: a.userId, conversationId: conversation.id, providerConversationId: `usage-${randomUUID()}`,
+      context: { route: "/library" }, status: "ended", expiresAt: new Date(), leaseExpiresAt: new Date(), durationSeconds: 12, costUsd: "0.4", credits: 40, usageStatus: "done" });
+    const other = await createConversation(db, a);
+    await recordModelUsage(db, a, { ...base, conversationId: other.id, idempotencyKey: `${other.id}:1`, providerMetadata: { gateway: { cost: "5" } } });
+
+    const summary = await getUsageSummary(db, a, conversation.id);
+    expect(summary).toMatchObject({ calls: 4, inputTokens: 24, outputTokens: 13, reportedCostUsd: "0.3500000000", unpricedCalls: 1,
+      unreportedTokenCalls: 1, totalTurns: 3, unassignedCalls: 1, voice: { reportedCostUsd: "0.4000000000", reportedDurationSeconds: 12 } });
+    expect(summary.turns).toMatchObject([
+      { runId: first.runId, number: 1, status: "completed", calls: 2, inputTokens: 22, outputTokens: 12, reportedCostUsd: "0.3000000000", unpricedCalls: 0, unreportedTokenCalls: 0 },
+      { runId: second.runId, number: 2, status: "aborted", calls: 1, inputTokens: 0, outputTokens: 0, reportedCostUsd: null, unpricedCalls: 1, unreportedTokenCalls: 1 },
+      { runId: third.runId, number: 3, status: "completed", calls: 0, reportedCostUsd: null, unpricedCalls: 0 },
+    ]);
+    expect(summary.turns?.every((turn) => typeof turn.createdAt === "string" && !Number.isNaN(Date.parse(turn.createdAt)))).toBe(true);
+    expect(JSON.stringify(summary.turns)).not.toContain("Find a soup recipe");
+    for (const actor of [b, teammate]) await expect(getUsageSummary(db, actor, conversation.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await getUsageSummary(db, a)).turns).toBeUndefined();
+  });
+
+  it("bounds per-turn response details while preserving chronological numbering and complete totals", async () => {
+    const conversation = await createConversation(db, a), start = Date.now() - 60_000;
+    const turns = Array.from({ length: 51 }, (_, index) => ({ id: randomUUID(), conversationId: conversation.id, requestId: randomUUID(), status: "completed" as const, createdAt: new Date(start + index * 1000) }));
+    await db.insert(conversationTurns).values(turns);
+    await recordModelUsage(db, a, { conversationId: conversation.id, runId: turns[0].id, idempotencyKey: `${turns[0].id}:1`, model: "anthropic/test-model", credentialSource: "app", usage: { inputTokens: 3, outputTokens: 2 }, providerMetadata: { gateway: { cost: "0.000001" } } });
+    const summary = await getUsageSummary(db, a, conversation.id);
+    expect(summary).toMatchObject({ calls: 1, reportedCostUsd: "0.0000010000", totalTurns: 51, unassignedCalls: 0 });
+    expect(summary.turns).toHaveLength(50);
+    expect(summary.turns?.[0]).toMatchObject({ runId: turns[1].id, number: 2 });
+    expect(summary.turns?.at(-1)).toMatchObject({ runId: turns[50].id, number: 51 });
   });
 });

@@ -1,0 +1,24 @@
+.launcher { position: fixed; bottom: max(1.5rem, env(safe-area-inset-bottom)); right: 1.25rem; z-index: 40; }
+.launcher[hidden] { display: none; }
+.primary { position: relative; width: 56px; height: 56px; padding: 0; border-radius: 50%; color: var(--background); background: var(--foreground); box-shadow: 0 5px 20px rgb(0 0 0 / .14); }
+.primary:hover { color: var(--background); background: var(--foreground); }
+.secondary { display: flex; align-items: center; padding: 3px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); box-shadow: 0 4px 16px rgb(0 0 0 / .06); }
+.status { position: absolute; right: 0; bottom: calc(100% + 10px); max-width: calc(100vw - 2.5rem); width: max-content; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--background); color: var(--muted-foreground); font-size: 11px; line-height: 1.5; }
+.indicator { display: inline-flex; position: relative; align-items: center; justify-content: center; width: 48px; height: 48px; flex-shrink: 0; border-radius: 50%; }
+.small { width: 30px; height: 30px; }
+.indicator[data-phase="listening"]::before, .indicator[data-phase="speaking"]::before { content: ""; position: absolute; inset: 2px; border: 1px solid currentColor; border-radius: 50%; opacity: .2; animation: breathe 2.4s ease-in-out infinite; }
+.wave { display: flex; align-items: center; justify-content: center; gap: 3px; height: 22px; }
+.wave i { width: 2px; height: 5px; border-radius: 2px; background: currentColor; }
+.wave i:nth-child(2), .wave i:nth-child(4) { height: 11px; }
+.wave i:nth-child(3) { height: 17px; }
+[data-phase="listening"] .wave { animation: breathe 2.4s ease-in-out infinite; }
+[data-phase="speaking"] .wave i { animation: speak .8s ease-in-out infinite alternate; }
+[data-phase="speaking"] .wave i:nth-child(2n) { animation-delay: -.35s; }
+[data-phase="thinking"] .wave i { height: 4px; animation: think 1.2s ease-in-out infinite; }
+[data-phase="thinking"] .wave i:nth-child(2n) { animation-delay: .2s; }
+.small .wave { transform: scale(.8); }
+@keyframes breathe { 0%, 100% { opacity: .45; scale: .9; } 50% { opacity: 1; scale: 1; } }
+@keyframes speak { from { transform: scaleY(.5); } to { transform: scaleY(1.15); } }
+@keyframes think { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+@media (min-width: 640px) { .launcher { right: 2rem; } }
+@media (prefers-reduced-motion: reduce) { .indicator::before, .wave, .wave i { animation: none !important; } }

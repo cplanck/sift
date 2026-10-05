@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { LanguageModelUsage } from "ai";
 import type { Database } from "@/db/connection";
@@ -13,6 +13,26 @@ export function reportedGatewayCost(metadata: unknown): string | null {
   const raw = typeof cost === "number" && Number.isFinite(cost) ? cost.toFixed(10) : typeof cost === "string" ? cost.trim().replace(/^\$/, "") : "";
   // Missing, malformed and estimated costs never become a zero-dollar charge.
   return /^\d{1,10}(?:\.\d{1,10})?$/.test(raw) ? raw : null;
+}
+type UsageRow = Pick<typeof aiUsage.$inferSelect, "inputTokens" | "outputTokens" | "costUsd" | "model" | "credentialSource">;
+function summarizeModelUsage(rows: UsageRow[]) {
+  // Integer ten-billionths keep USD addition exact at the ledger's precision.
+  let costUnits = 0n, knownCosts = 0;
+  for (const row of rows) if (row.costUsd !== null) {
+    const [whole, fraction = ""] = row.costUsd.split(".");
+    costUnits += BigInt(whole) * 10_000_000_000n + BigInt(fraction.padEnd(10, "0")); knownCosts++;
+  }
+  return {
+    calls: rows.length,
+    inputTokens: rows.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0),
+    outputTokens: rows.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0),
+    reportedCostUsd: knownCosts ? `${costUnits / 10_000_000_000n}.${(costUnits % 10_000_000_000n).toString().padStart(10, "0")}` : null,
+    unpricedCalls: rows.length - knownCosts,
+    unreportedTokenCalls: rows.filter((row) => row.inputTokens === null || row.outputTokens === null).length,
+    models: [...new Set(rows.map((row) => row.model))],
+    userKeyCalls: rows.filter((row) => row.credentialSource === "user").length,
+    appKeyCalls: rows.filter((row) => row.credentialSource === "app").length,
+  };
 }
 export async function recordModelUsage(db: Database, actor: Actor, input: {
   idempotencyKey: string; conversationId?: string; runId?: string; importId?: string;
@@ -49,12 +69,27 @@ export async function getUsageSummary(db: Database, actor: Actor, conversationId
     const [conversation] = await db.select({ id: conversations.id }).from(conversations).where(and(eq(conversations.id, conversationId), eq(conversations.workspaceId, actor.workspaceId), eq(conversations.createdByUserId, actor.userId)));
     if (!conversation) throw new DomainError("NOT_FOUND", "Conversation not found.");
   }
-  const rows = await db.select({ inputTokens: aiUsage.inputTokens, outputTokens: aiUsage.outputTokens, costUsd: aiUsage.costUsd, model: aiUsage.model, credentialSource: aiUsage.credentialSource }).from(aiUsage)
+  const rows = await db.select({ runId: aiUsage.runId, inputTokens: aiUsage.inputTokens, outputTokens: aiUsage.outputTokens, costUsd: aiUsage.costUsd, model: aiUsage.model, credentialSource: aiUsage.credentialSource }).from(aiUsage)
     .where(and(eq(aiUsage.workspaceId, actor.workspaceId), eq(aiUsage.userId, actor.userId), ...(conversationId ? [eq(aiUsage.conversationId, z.uuid().parse(conversationId))] : [])));
-  // Integer ten-billionths keep USD addition exact at the ledger's precision.
-  let costUnits = 0n, knownCosts = 0;
-  for (const row of rows) if (row.costUsd !== null) { const [whole, fraction = ""] = row.costUsd.split("."); costUnits += BigInt(whole) * 10_000_000_000n + BigInt(fraction.padEnd(10, "0")); knownCosts++; }
-  const reportedCostUsd = knownCosts ? `${costUnits / 10_000_000_000n}.${(costUnits % 10_000_000_000n).toString().padStart(10, "0")}` : null;
+  // A tool loop may make several model calls. Attribute every call to its
+  // durable turn, including failed/aborted turns, without copying message text.
+  // Cookbook totals deliberately omit private conversation details.
+  const allTurns = conversationId ? await db.select({ runId: conversationTurns.id, status: conversationTurns.status, createdAt: conversationTurns.createdAt })
+    .from(conversationTurns).where(eq(conversationTurns.conversationId, conversationId)).orderBy(asc(conversationTurns.createdAt), asc(conversationTurns.id)) : undefined;
+  const callsByTurn = new Map<string, UsageRow[]>();
+  for (const row of rows) if (row.runId) {
+    const calls = callsByTurn.get(row.runId) ?? [];
+    calls.push(row); callsByTurn.set(row.runId, calls);
+  }
+  const shownTurns = allTurns?.slice(-50);
+  const turnDetails = allTurns && shownTurns ? {
+    totalTurns: allTurns.length,
+    unassignedCalls: rows.filter((row) => row.runId === null).length,
+    turns: shownTurns.map((turn, index) => ({
+      ...turn, createdAt: turn.createdAt.toISOString(), number: allTurns.length - shownTurns.length + index + 1,
+      ...summarizeModelUsage(callsByTurn.get(turn.runId) ?? []),
+    })),
+  } : {};
   const voiceRows = await db.select({ providerConversationId: voiceSessions.providerConversationId, durationSeconds: voiceSessions.durationSeconds, costUsd: voiceSessions.costUsd, credits: voiceSessions.credits }).from(voiceSessions)
     .where(and(eq(voiceSessions.workspaceId, actor.workspaceId), eq(voiceSessions.userId, actor.userId), ...(conversationId ? [eq(voiceSessions.conversationId, conversationId)] : [])));
   const issued = voiceRows.filter((row) => row.providerConversationId !== null);
@@ -63,5 +98,5 @@ export async function getUsageSummary(db: Database, actor: Actor, conversationId
   const voice = { sessions: issued.length, reportedDurationSeconds: issued.reduce((sum, row) => sum + (row.durationSeconds ?? 0), 0),
     reportedCostUsd: voicePriced ? `${voiceCost / 10_000_000_000n}.${(voiceCost % 10_000_000_000n).toString().padStart(10, "0")}` : null,
     reportedCredits: issued.some((row) => row.credits !== null) ? issued.reduce((sum, row) => sum + (row.credits ?? 0), 0) : null, unpricedSessions: issued.length - voicePriced };
-  return { calls: rows.length, inputTokens: rows.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0), outputTokens: rows.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0), reportedCostUsd, unpricedCalls: rows.length - knownCosts, models: [...new Set(rows.map((row) => row.model))], userKeyCalls: rows.filter((row) => row.credentialSource === "user").length, appKeyCalls: rows.filter((row) => row.credentialSource === "app").length, voice };
+  return { ...summarizeModelUsage(rows), ...turnDetails, voice };
 }

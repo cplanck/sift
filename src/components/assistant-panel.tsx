@@ -3,16 +3,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
-import { ArrowLeft, ArrowUp, History, LoaderCircle, Mic, MoreHorizontal, Pencil, Plus, RefreshCw, Settings2, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, BookOpen, CalendarDays, ChevronDown, Check, History, ListChecks, LoaderCircle, Mic, MoreHorizontal, Pencil, PhoneOff, Plus, ReceiptText, RefreshCw, Settings2, SlidersHorizontal, Square, Trash2, X } from "lucide-react";
 import type { SiftUIMessage } from "@/ai/assistant-runtime";
 import type { ClientPageContext } from "@/domain/assistant";
 import { api } from "@/lib/client-http";
 import type { Conversation, ConversationList } from "./assistant-shell";
 import { AssistantMessage } from "./assistant-message";
+import { AssistantThinking } from "./assistant-thinking";
 import { AssistantDetails } from "./assistant-details";
 import { ModelSelector } from "./model-selector";
 import type { SiftVoice } from "./use-voice-session";
-import { VoiceControls } from "./voice-controls";
+import { VoiceIndicator, VoiceLauncher, voiceLabels } from "./voice-launcher";
+import { AiUsageDetails } from "./ai-usage-details";
+import styles from "./assistant-panel.module.css";
 import { MicrophoneSettings } from "./microphone-settings";
 import { ARTIFACT_CHANGED } from "./use-artifact";
 import { artifactPreviewSchema } from "./artifact-card";
@@ -20,19 +23,23 @@ import { SiftMark } from "./brand";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
-import { Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "./ui/sheet";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "./ui/sheet";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
+
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 
 type Props = {
   open: boolean; onOpenChange: (value: boolean) => void; conversation: Conversation | null; history: ConversationList; loading: boolean; loadError: string; pageLabel: string; getPageContext: () => ClientPageContext;
   onSettings: () => void; onNew: () => Promise<void>; onLoad: (id: string) => Promise<void>; onHistory: () => Promise<ConversationList>; onConversationChanged: (conversation: Conversation | null) => void;
-  voice: SiftVoice; subscribeVoiceConversation: (listener: (saved: Conversation) => void) => () => void;
+  voice: SiftVoice; onVoiceDetails: () => void; subscribeVoiceConversation: (listener: (saved: Conversation) => void) => () => void;
 };
 
-export function AssistantPanel({ open, onOpenChange, conversation, history, loading, loadError, pageLabel, getPageContext, onSettings, onNew, onLoad, onHistory, onConversationChanged, voice, subscribeVoiceConversation }: Props) {
+export function AssistantPanel({ open, onOpenChange, conversation, history, loading, loadError, pageLabel, getPageContext, onSettings, onNew, onLoad, onHistory, onConversationChanged, voice, onVoiceDetails, subscribeVoiceConversation }: Props) {
   const router = useRouter();
-  const [input, setInput] = useState(""), [view, setView] = useState<"chat" | "history">("chat"), [action, setAction] = useState<"rename" | "delete" | null>(null), [actionError, setActionError] = useState(""), [actionBusy, setActionBusy] = useState(false), [savedError, setSavedError] = useState(conversation?.lastError ?? ""), [serverBusy, setServerBusy] = useState(conversation?.busy ?? false), [reloading, setReloading] = useState(false);
+  const [input, setInput] = useState(""), [action, setAction] = useState<"rename" | "delete" | null>(null), [actionError, setActionError] = useState(""), [actionBusy, setActionBusy] = useState(false), [savedError, setSavedError] = useState(conversation?.lastError ?? ""), [serverBusy, setServerBusy] = useState(conversation?.busy ?? false), [reloading, setReloading] = useState(false);
   const [clientError, setClientError] = useState("");
+  const [showLatest, setShowLatest] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false), [historyLoading, setHistoryLoading] = useState(false);
   const scrollArea = useRef<HTMLDivElement>(null), nearBottom = useRef(true), submitted = useRef<{ id: string; text: string } | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const renderedMutations = useRef(new Set((conversation?.messages ?? []).flatMap((message) => message.parts.filter(isToolUIPart).map((part) => part.toolCallId))));
@@ -51,7 +58,7 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
       return { body: { ...common, message: { id: message.id, text: message.parts.filter((part) => part.type === "text").map((part) => part.text).join("\n") } } };
     },
   }), [getPageContext]);
-  const { messages, status, error, sendMessage, setMessages, clearError, addToolApprovalResponse } = useChat<SiftUIMessage>({
+  const { messages, status, error, sendMessage, setMessages, clearError, addToolApprovalResponse, stop } = useChat<SiftUIMessage>({
     id: conversation?.id ?? "not-started", messages: (conversation?.messages ?? []) as SiftUIMessage[], transport, generateId: () => crypto.randomUUID(),
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     onError: (error) => { setClientError(error.message); void reloadSaved(); },
@@ -93,7 +100,7 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
     const timer = setInterval(() => { void reloadSaved(); }, 2500);
     return () => clearInterval(timer);
   }, [serverBusy, streaming, reloadSaved]);
-  useEffect(() => { if (nearBottom.current) scrollArea.current?.scrollTo({ top: scrollArea.current.scrollHeight, behavior: "instant" }); }, [messages, streaming, open]);
+  useEffect(() => { if (nearBottom.current) scrollArea.current?.scrollTo({ top: messages.length ? scrollArea.current.scrollHeight : 0, behavior: "instant" }); }, [messages, streaming, open]);
   useEffect(() => {
     let changed = false;
     for (const message of messages) for (const part of message.parts) {
@@ -117,11 +124,29 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
     await addToolApprovalResponse({ id, approved, options: { body: { approval: { id, approved } } } });
   }
   return <Sheet open={open} onOpenChange={onOpenChange}>
-    {!voiceVisible && <SheetTrigger asChild><Button aria-label="Open Sift" className="fixed bottom-[max(1.5rem,env(safe-area-inset-bottom))] right-5 z-40 h-12 gap-2 rounded-full border border-foreground/10 px-4 shadow-lg sm:right-8"><SiftMark className="size-5" /><span className="font-medium">sift</span>{streaming && <span aria-label="Reply in progress" className="size-1.5 rounded-full bg-background/70" />}</Button></SheetTrigger>}
-    <SheetContent side="right" showCloseButton={false} className="h-dvh w-full gap-0 border-l bg-background p-0 sm:w-[420px] sm:max-w-[420px]">
-      <SheetHeader className="gap-3 border-b px-5 pb-4 pt-[max(1rem,env(safe-area-inset-top))]"><div className="flex items-center justify-between gap-3"><SheetTitle className="flex items-center gap-2 text-xl tracking-tight"><SiftMark className="size-6" />sift</SheetTitle><div className="flex gap-0.5"><Button variant="ghost" size="icon" aria-label="Conversation history" disabled={busy} onClick={async () => { setView(view === "history" ? "chat" : "history"); setAction(null); try { await onHistory(); } catch { setActionError("Couldn’t load conversations. Try again."); } }}><History /></Button><Button variant="ghost" size="icon" aria-label="New conversation" disabled={busy} onClick={() => { setView("chat"); void onNew(); }}><Plus /></Button><SheetClose asChild><Button variant="ghost" size="icon" aria-label="Close Sift"><X /></Button></SheetClose></div></div><SheetDescription className="truncate text-xs">{view === "history" ? "Your conversations" : pageLabel}</SheetDescription></SheetHeader>
-      {view === "history" ? <div className="min-h-0 flex-1 overflow-y-auto p-5"><Button variant="ghost" size="sm" className="mb-3" onClick={() => setView("chat")}><ArrowLeft />Back to conversation</Button>{history.length ? <ul className="space-y-2">{history.map((item) => <li key={item.id}><button disabled={loading} className="w-full rounded-xl border p-4 text-left hover:bg-muted disabled:opacity-50" onClick={() => { setView("chat"); void onLoad(item.id); }}><span className="block truncate text-sm font-medium">{item.title}</span><span className="mt-2 block text-xs text-muted-foreground">{new Date(item.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span></button></li>)}</ul> : <p className="py-8 text-sm text-muted-foreground">Your conversations will appear here.</p>}</div>
-      : <><div className="flex items-center justify-between gap-2 border-b px-5 py-2"><p className="truncate text-xs text-muted-foreground">{conversation?.title || "Your cookbook, with a little help."}</p><DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="Conversation options" disabled={!conversation || busy}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => { setAction("rename"); setActionError(""); }}><Pencil />Rename conversation</DropdownMenuItem><DropdownMenuItem onSelect={() => { setAction("delete"); setActionError(""); }}><Trash2 />Delete conversation</DropdownMenuItem></DropdownMenuContent></DropdownMenu></div>
+    <VoiceLauncher voice={voice} hidden={open} disabled={busy || pendingApproval} replying={streaming || serverBusy} onDetails={onVoiceDetails} />
+    <SheetContent id="sift-chat" side="bottom" showCloseButton={false} overlayClassName={styles.overlay} className={`${styles.panel} gap-0 overflow-hidden border bg-background p-0`} onOpenAutoFocus={(event) => { event.preventDefault(); requestAnimationFrame(() => { nearBottom.current = true; setShowLatest(false); scrollArea.current?.scrollTo({ top: scrollArea.current.scrollHeight, behavior: "instant" }); if (window.matchMedia("(min-width: 640px)").matches) composer.current?.focus(); }); }}>
+      <SheetHeader className="flex-row items-center justify-between gap-3 border-b border-border/60 px-5 pb-3 pt-[max(.75rem,env(safe-area-inset-top))]">
+        <SheetTitle className="sr-only">sift</SheetTitle>
+        <SheetDescription className="sr-only">{pageLabel}</SheetDescription>
+        <div className="flex min-w-0 items-center gap-1">
+          <SiftMark className="size-8 shrink-0" />
+          <DropdownMenu onOpenChange={(isOpen) => { if (isOpen) { setHistoryLoading(true); void onHistory().catch(() => setActionError("Couldn’t load conversations. Try again.")).finally(() => setHistoryLoading(false)); } }}>
+            <DropdownMenuTrigger asChild><Button variant="ghost" aria-label="Conversation history" title="Past conversations" disabled={busy} className="min-w-0 gap-2 rounded-full px-2 text-xs text-muted-foreground">{conversation && conversation.title !== "New conversation" && <span className="max-w-[170px] truncate text-left">{conversation.title}</span>}<ChevronDown className="size-4 shrink-0" /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-80 max-w-[calc(100vw-2rem)] rounded-2xl p-2">
+              <DropdownMenuLabel className="px-3 pb-2 pt-2 text-xs font-medium text-muted-foreground">Past conversations</DropdownMenuLabel>
+              <div className="max-h-[min(360px,50dvh)] overflow-y-auto">
+                {historyLoading ? <p role="status" className="flex items-center gap-2 px-3 py-5 text-xs text-muted-foreground"><LoaderCircle className="size-3.5 animate-spin" />Loading conversations…</p> : history.length ? history.map((item) => <DropdownMenuItem key={item.id} disabled={loading} onSelect={() => { setAction(null); void onLoad(item.id); }} className="min-h-14 gap-3 rounded-xl px-3 py-2.5"><History className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1"><span className="block truncate text-sm">{item.title}</span><span className="mt-1 block text-[11px] text-muted-foreground">{new Date(item.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span></span>{item.id === conversation?.id && <Check className="size-3.5 shrink-0" />}</DropdownMenuItem>) : <p className="px-3 py-5 text-xs text-muted-foreground">No past conversations yet.</p>}
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Button variant="ghost" size="icon" aria-label="New conversation" title="New conversation" disabled={busy} className="rounded-full text-muted-foreground" onClick={() => { setAction(null); void onNew(); }}><Plus className="size-[18px]" /></Button>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="Conversation options" title="Conversation options" disabled={!conversation} className="rounded-full text-muted-foreground"><MoreHorizontal className="size-[18px]" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-56 rounded-xl p-1.5"><DropdownMenuItem onSelect={() => setUsageOpen(true)}><ReceiptText />Conversation usage</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem disabled={busy} onSelect={() => { setAction("rename"); setActionError(""); }}><Pencil />Rename conversation</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => { setAction("delete"); setActionError(""); }}><Trash2 />Delete conversation</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={onSettings}><Settings2 />Sift settings</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+          <SheetClose asChild><Button variant="ghost" size="icon" aria-label="Close Sift" title="Close conversation" className="rounded-full text-muted-foreground"><X className="size-[18px]" /></Button></SheetClose>
+        </div>
+      </SheetHeader>
         {action === "rename" && conversation && <form className="space-y-3 border-b p-5" onSubmit={async (event) => {
           event.preventDefault(); setActionBusy(true); setActionError("");
           try { const updated = await api<Conversation>(`/api/conversations/${conversation.id}`, { method: "PATCH", body: { title: String(new FormData(event.currentTarget).get("title")) } }); onConversationChanged(updated); await onHistory(); setAction(null); }
@@ -134,20 +159,39 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
           catch (error) { setActionError(error instanceof Error ? error.message : "Couldn’t delete this conversation."); }
           finally { setActionBusy(false); }
         }}>Confirm delete</Button><Button size="sm" variant="ghost" disabled={actionBusy} onClick={() => setAction(null)}>Cancel</Button></div></div>}
-        <div ref={scrollArea} onScroll={(event) => { const target = event.currentTarget; nearBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight < 100; }} className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-5 py-6" role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation messages">
-          {loading && !conversation ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Opening your conversation…</p> : !messages.length && <div className="py-6 sm:py-10"><SiftMark className="mb-6 size-10 text-muted-foreground" /><h2 className="text-2xl font-medium tracking-tight">What’s cooking?</h2><p className="mt-4 text-sm leading-7 text-muted-foreground">Ask about a recipe, save an idea, or make a dish your own. I can see which recipe you’re reading.</p><div className="mt-6 flex flex-wrap gap-2">{["What can I cook tonight?", "Help me save a recipe"].map((prompt) => <Button key={prompt} variant="outline" size="sm" onClick={() => setInput(prompt)}>{prompt}</Button>)}</div></div>}
-          {messages.map((message) => <AssistantMessage key={message.id} message={message} busy={busy} liveArtifactReceipts={liveArtifactReceipts} onApproval={(id, approved) => { void approve(id, approved); }} onNavigate={() => onOpenChange(false)} />)}
-          {(streaming || serverBusy) && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />{serverBusy && !streaming ? "Sift is finishing the saved reply…" : status === "submitted" ? "Thinking…" : "Sift is replying…"}</p>}
-          {(error || clientError || savedError) && <div role="alert" className="rounded-xl border p-4"><p className="text-sm leading-relaxed text-destructive">{error?.message || clientError || savedError}</p><p className="mt-2 text-xs leading-relaxed text-muted-foreground">Check the saved results before sending another message.</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={reloading || streaming} onClick={() => { void reloadSaved(); }}><RefreshCw />Reload saved conversation</Button><Button size="sm" variant="ghost" onClick={onSettings}><Settings2 />Sift settings</Button></div></div>}
-          {(loadError || actionError) && <p role="alert" className="text-sm text-destructive">{loadError || actionError}</p>}
-          {conversation && <AssistantDetails conversation={conversation} showReceipts={!!(error || clientError || savedError)} onNavigate={() => onOpenChange(false)} />}
-          {!conversation && !loading && loadError && <Button variant="outline" onClick={() => onOpenChange(true)}>Try again</Button>}
+        <div className="relative min-h-0 flex-1">
+          <div ref={scrollArea} onScroll={(event) => { const target = event.currentTarget; nearBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight < 100; setShowLatest(!nearBottom.current); }} className={`${styles.conversation} h-full space-y-7 overflow-y-auto overscroll-contain px-5 pb-6 pt-6 sm:px-7`} role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation messages">
+            {loading && !conversation ? <AssistantThinking label="Opening your conversation…" /> : !messages.length && <div className="flex min-h-72 flex-col justify-center py-7 sm:min-h-80">
+              <p className="mb-4 text-xs font-medium tracking-wide text-muted-foreground">A little help in the kitchen</p>
+              <h2 className="text-[28px] font-semibold tracking-[-.045em]">What sounds good?</h2><p className="mt-3 max-w-[340px] text-sm leading-6 text-muted-foreground">Find a recipe, make it yours, or plan your next meal.</p>
+              <div className="mt-7 grid grid-cols-2 gap-2">{[
+                { icon: BookOpen, label: "Find a recipe", prompt: "What can I cook tonight?" },
+                { icon: ListChecks, label: "Build a grocery list", prompt: "Help me build a grocery list from my recipes.", recipePrompt: "Make a grocery list for this recipe." },
+                { icon: SlidersHorizontal, label: "Make a substitution", prompt: "Help me make a substitution in a recipe.", recipePrompt: "Suggest a substitution for this recipe." },
+                { icon: CalendarDays, label: "Plan some meals", prompt: "Help me plan meals for this week." },
+              ].map(({ icon: Icon, label, prompt, recipePrompt }) => <button key={label} disabled={busy || !conversation} className="flex min-h-14 items-center gap-2.5 rounded-xl bg-muted/65 px-3.5 py-3 text-left text-xs leading-5 transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50" onClick={() => { setInput(recipePrompt && getPageContext().activeRecipeId ? recipePrompt : prompt); composer.current?.focus(); }}><Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span>{label}</span></button>)}</div>
+            </div>}
+            {messages.map((message) => <AssistantMessage key={message.id} message={message} busy={busy} streaming={streaming && message.id === messages.at(-1)?.id} liveArtifactReceipts={liveArtifactReceipts} onApproval={(id, approved) => { void approve(id, approved); }} onNavigate={() => onOpenChange(false)} />)}
+            {(streaming || serverBusy) && <AssistantThinking label={serverBusy && !streaming ? "Finishing the saved reply…" : status === "submitted" ? "Thinking…" : "Replying…"} />}
+            {(error || clientError || savedError) && <div role="alert" className="rounded-2xl border border-destructive/25 bg-destructive/5 p-4"><p className="text-sm leading-relaxed text-destructive">{error?.message || clientError || savedError}</p><p className="mt-2 text-xs leading-relaxed text-muted-foreground">Check the saved results before sending another message.</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={reloading || streaming} onClick={() => { void reloadSaved(); }}><RefreshCw />Reload saved conversation</Button><Button size="sm" variant="ghost" onClick={onSettings}><Settings2 />Sift settings</Button></div></div>}
+            {(loadError || actionError) && <p role="alert" className="text-sm text-destructive">{loadError || actionError}</p>}
+            {conversation && !!(error || clientError || savedError) && <AssistantDetails conversation={conversation} showReceipts={!!(error || clientError || savedError)} onNavigate={() => onOpenChange(false)} />}
+            {!conversation && !loading && loadError && <Button variant="outline" onClick={() => onOpenChange(true)}>Try again</Button>}
+          </div>
+          {showLatest && messages.length > 0 && <Button variant="outline" size="icon" aria-label="Jump to latest message" className="absolute bottom-3 left-1/2 size-9 -translate-x-1/2 rounded-full bg-background shadow-md" onClick={() => { nearBottom.current = true; setShowLatest(false); scrollArea.current?.scrollTo({ top: scrollArea.current.scrollHeight, behavior: "smooth" }); }}><ArrowDown className="size-4" /></Button>}
         </div>
-        <div className="border-t bg-background px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
-          {voiceVisible && <div className="mb-3"><VoiceControls voice={voice} onTranscript={() => setView("chat")} onText={() => { void voice.end().then(() => composer.current?.focus()); }} /></div>}
-          {!voice.busy && <form onSubmit={(event) => { event.preventDefault(); void submit(); }}><div className="mb-2 flex flex-wrap items-center justify-between gap-1">{conversation && <ModelSelector conversation={conversation} disabled={busy || pendingApproval} onBusy={setActionBusy} onChanged={(saved) => { setMessages(saved.messages as SiftUIMessage[]); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); onConversationChanged(saved); }} />}<Button type="button" variant="ghost" size="sm" disabled={busy || pendingApproval || !conversation} onClick={() => void voice.start()}><Mic />Talk to Sift</Button><MicrophoneSettings disabled={loading || !conversation} voiceBusy={voice.busy} onEndVoice={voice.endForAudioSettings} /></div><div className="relative"><Textarea ref={composer} aria-label="Message Sift" disabled={loading || !conversation} value={input} onChange={(event) => setInput(event.target.value)} maxLength={8000} placeholder="Ask Sift…" className="max-h-44 min-h-24 resize-none rounded-2xl bg-muted/35 pb-12 pr-4 text-base sm:text-sm" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} /><Button type="submit" size="icon" aria-label="Send message" disabled={busy || pendingApproval || !input.trim() || !conversation} className="absolute bottom-2 right-2 size-9 rounded-xl">{streaming ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div><p className="mt-2 text-center text-[11px] leading-relaxed text-muted-foreground">{pendingApproval ? "Respond to the confirmation above to continue." : "Recipe changes are kept in version history."}</p></form>}
+        <div className="shrink-0 bg-background px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-5">
+          {voiceVisible && <div className="mb-3 flex items-center gap-2 rounded-2xl border border-border/70 bg-muted/35 p-2.5"><VoiceIndicator phase={voice.phase} small /><p role="status" className="min-w-0 flex-1 text-xs font-medium">{voiceLabels[voice.phase]}</p><Button variant="ghost" size="icon" aria-label="Voice controls" title="Voice controls" className="size-11 rounded-full" onClick={onVoiceDetails}><SlidersHorizontal className="size-4" /></Button>{voice.busy && <Button variant="ghost" size="icon" aria-label="End voice" title="End voice" className="size-11 rounded-full" disabled={voice.phase === "ending"} onClick={() => void voice.end()}><PhoneOff className="size-4" /></Button>}</div>}
+          {!voice.busy && <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+            <div className="rounded-[22px] border border-border/80 bg-muted/55 px-2 pb-2 pt-1 transition-shadow focus-within:border-ring/50 focus-within:ring-2 focus-within:ring-ring/10">
+              <Textarea id="sift-composer" ref={composer} aria-label="Message Sift" disabled={loading || !conversation} value={input} onChange={(event) => setInput(event.target.value)} maxLength={8000} rows={2} placeholder="Ask Sift…" className="max-h-40 min-h-[68px] resize-none rounded-none border-0 bg-transparent px-3 py-3 text-base leading-6 shadow-none focus-visible:ring-0 sm:text-sm dark:bg-transparent" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} />
+              <div className="flex min-h-11 items-center justify-between gap-1"><div className="min-w-0 flex-1">{conversation && <ModelSelector conversation={conversation} disabled={busy || pendingApproval} onBusy={setActionBusy} onChanged={(saved) => { setMessages(saved.messages as SiftUIMessage[]); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); onConversationChanged(saved); }} />}</div><div className="flex shrink-0 items-center gap-0.5"><MicrophoneSettings disabled={loading || !conversation} voiceBusy={voice.busy} onEndVoice={voice.endForAudioSettings} /><Button type="button" variant="ghost" size="icon" aria-label="Talk to Sift" title="Talk to Sift" disabled={busy || pendingApproval || !conversation} onClick={() => void voice.start()} className="rounded-full text-muted-foreground"><Mic className="size-[18px]" /></Button>{streaming ? <Button type="button" size="icon" aria-label="Stop generating" title="Stop generating" className="size-10 rounded-full" onClick={() => void stop()}><Square className="size-3.5 fill-current" /></Button> : <Button type="submit" size="icon" aria-label="Send message" disabled={busy || pendingApproval || !input.trim() || !conversation} className="size-10 rounded-full"><ArrowUp className="size-[18px]" /></Button>}</div></div>
+            </div>
+            {pendingApproval && <p className="mt-2.5 text-center text-[11px] leading-relaxed text-muted-foreground">Respond to the confirmation above to continue.</p>}
+          </form>}
         </div>
-      </>}
     </SheetContent>
+
+    <Dialog open={usageOpen} onOpenChange={setUsageOpen}><DialogContent className="max-h-[85dvh] overflow-y-auto rounded-3xl p-6 sm:max-w-lg"><DialogHeader><DialogTitle>Conversation usage</DialogTitle><DialogDescription>Model usage by turn. Voice is billed separately.</DialogDescription></DialogHeader>{conversation && <AiUsageDetails usage={conversation.usage} expanded />}</DialogContent></Dialog>
   </Sheet>;
 }

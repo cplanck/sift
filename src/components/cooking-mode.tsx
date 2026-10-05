@@ -6,7 +6,7 @@ import { ArrowLeft, ArrowRight, Check, ChevronDown, Minus, Plus } from "lucide-r
 import type { CookingSessionDetail } from "@/domain/cooking";
 import { scaleIngredient } from "@/domain/scaling";
 import { api } from "@/lib/client-http";
-import { useAssistantPage, useSiftVoice } from "./assistant-shell";
+import { useAssistantPage } from "./assistant-shell";
 import { CookingWakeLock } from "./cooking-wake-lock";
 import { OfflineRecipeSnapshot } from "./offline-recipe";
 import { PhotoUpload } from "./photo-upload";
@@ -29,7 +29,7 @@ export function CookingMode({ initialSession, canEdit, coverPhotoId }: { initial
   const online = useSyncExternalStore(subscribeNetwork, networkSnapshot, serverNetworkSnapshot);
   const [localProgress, setLocalProgress] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [dialog, setDialog] = useState<"completed" | "abandoned" | null>(null);
-  const saving = useRef(false), router = useRouter(), voice = useSiftVoice();
+  const saving = useRef(false), router = useRouter();
   if (previous !== initialSession) { setPrevious(initialSession); setSavedSession(initialSession); setSession(initialSession); setLocalProgress(false); }
   const { content } = session.version, active = session.status === "active", editable = active && canEdit, progressEditable = editable && (!online || !localProgress);
   const steps = content.instructionSections.flatMap((section, sectionIndex) => section.steps.map((text, index) => ({ key: `${sectionIndex}:${index}`, section: section.name, text })));
@@ -63,7 +63,7 @@ export function CookingMode({ initialSession, canEdit, coverPhotoId }: { initial
     } catch (error) { setError(error instanceof Error ? error.message : "Couldn’t finish this cook."); await reload().catch(() => {}); }
     finally { saving.current = false; setBusy(false); }
   }
-  return <main id="main" className={`page-width max-w-4xl pt-[max(1rem,env(safe-area-inset-top))] sm:pt-[max(2rem,env(safe-area-inset-top))] ${voice?.busy || voice?.error || voice?.notice ? "pb-[calc(16rem+env(safe-area-inset-bottom))]" : "pb-[calc(7rem+env(safe-area-inset-bottom))]"}`}>
+  return <main id="main" className="page-width max-w-4xl pb-[calc(9rem+env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] sm:pt-[max(2rem,env(safe-area-inset-top))]">
     <OfflineRecipeSnapshot snapshot={{ recipeId: session.recipeId, versionId: session.recipeVersionId, versionNumber: session.version.number, content, coverPhotoId, cooking: { id: session.id, status: savedSession.status, servings: savedSession.servings, ...savedSession.progress } }} />
     <div className="mb-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-border/60 pb-3 sm:mb-8"><Link href={`/recipes/${session.recipeId}`} className="inline-flex min-h-11 items-center gap-2 rounded-md text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"><ArrowLeft size={16} />Back to recipe</Link>{active && <CookingWakeLock />}</div>
     <header className="mb-6 flex items-start justify-between gap-5 sm:mb-8"><div className="min-w-0"><p className="mb-2 text-xs font-medium text-muted-foreground">{active ? "Cooking now" : session.status === "completed" ? "Cook completed" : "Cook ended early"} <span className="mx-1.5 text-muted-foreground/50">·</span> {session.servings} servings</p><h1 className="max-w-3xl break-words text-2xl font-semibold leading-tight tracking-tight sm:text-3xl">{content.title}</h1>{!active && <p className="mt-2.5 text-sm text-muted-foreground">{new Date(session.startedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })} · Version {session.version.number}{session.rating != null ? ` · ${session.rating}/5` : ""}</p>}</div>{coverPhotoId && <RecipeThumbnail photoId={coverPhotoId} alt={content.title} className="size-16 rounded-2xl sm:size-20" />}</header>
@@ -78,7 +78,7 @@ export function CookingMode({ initialSession, canEdit, coverPhotoId }: { initial
         {current.section && <p className="mt-7 text-xs font-medium text-muted-foreground">{current.section}</p>}
         <p className={`${current.section ? "mt-3" : "mt-7"} mb-8 max-w-3xl break-words text-2xl font-medium leading-[1.45] tracking-tight sm:mb-10 sm:text-[2rem] lg:text-[2.25rem]`}>{current.text}</p>
       </div>
-      <div className={`sticky z-10 rounded-b-3xl border-t border-border/60 bg-background p-4 sm:static sm:px-6 sm:py-5 ${voice?.busy || voice?.error || voice?.notice ? "bottom-[calc(20rem+env(safe-area-inset-bottom))]" : "bottom-[calc(6rem+env(safe-area-inset-bottom))]"}`}>
+      <div className="sticky bottom-[calc(8rem+env(safe-area-inset-bottom))] z-10 rounded-b-3xl border-t border-border/60 bg-background p-4 sm:static sm:px-6 sm:py-5">
         <div className="flex items-center justify-between gap-3"><Button variant="outline" size="icon" className="size-12 shrink-0 rounded-full" aria-label="Previous step" disabled={!progressEditable || busy || session.progress.currentStep === 0} onClick={() => saveProgress({ ...session.progress, currentStep: session.progress.currentStep - 1 })}><ArrowLeft className="size-5" /></Button><Button variant={currentChecked ? "secondary" : "default"} aria-label={currentChecked ? "Mark step unfinished" : "Mark step done"} aria-pressed={currentChecked} className="h-12 min-w-0 flex-1 rounded-full px-4 text-sm sm:max-w-56" disabled={!progressEditable || busy} onClick={() => toggle("checkedSteps", current.key)}><Check />{currentChecked ? "Step completed" : "Mark done"}</Button><Button variant="outline" size="icon" className="size-12 shrink-0 rounded-full" aria-label="Next step" disabled={!progressEditable || busy || session.progress.currentStep >= steps.length - 1} onClick={() => saveProgress({ ...session.progress, currentStep: session.progress.currentStep + 1 })}><ArrowRight className="size-5" /></Button></div>
       </div>
     </section>}

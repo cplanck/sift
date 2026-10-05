@@ -28,7 +28,7 @@ export function ModelSelector({ conversation, disabled, onBusy, onChanged }: { c
       await api<Conversation>(`/api/conversations/${conversation.id}`).then(onChanged).catch(() => {});
     } finally { setSaving(false); onBusy(false); }
   }
-  return <div className="mb-2">
+  return <div className="min-w-0">
     <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="sm" className="max-w-full gap-2 px-2 text-xs text-muted-foreground" aria-label={`Assistant model: ${label}`} disabled={disabled || saving || !models}>
       {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}<span className="truncate">{label}</span><ChevronDown className="size-3.5" />
     </Button></DropdownMenuTrigger><DropdownMenuContent align="start" side="top" className="w-72 max-w-[calc(100vw-2rem)]">

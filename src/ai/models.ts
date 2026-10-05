@@ -2,7 +2,7 @@ import "server-only";
 import { createGateway } from "@ai-sdk/gateway";
 import { env, requireConfig } from "@/lib/env";
 
-export const models = { assistant: "anthropic/claude-sonnet-4.5", extraction: "anthropic/claude-sonnet-4.5" } as const;
+export const models = { assistant: "anthropic/claude-sonnet-5.5", extraction: "anthropic/claude-sonnet-4.5" } as const;
 export const assistantModelOptions = [
   { id: "anthropic/claude-haiku-4.5", label: "Claude Haiku 4.5", description: "Quick questions and lighter recipe edits." },
   { id: "anthropic/claude-sonnet-4.5", label: "Claude Sonnet 4.5", description: "Everyday cookbook conversations and edits." },

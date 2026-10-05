@@ -5,7 +5,7 @@ import type { UIMessage } from "ai";
 import { connectDatabase } from "@/db/connection";
 import { conversations, users, workspaceMembers } from "@/db/schema";
 import { assistantResponse } from "@/ai/assistant-runtime";
-import { assistantModelOptions, getAssistantModels, prepareAssistantModel } from "@/ai/models";
+import { assistantModelOptions, gatewayModel, getAssistantModels, prepareAssistantModel } from "@/ai/models";
 import { beginConversationTurn, createConversation, finishConversationTurn, getConversation, listConversations, setConversationModel } from "@/services/conversations";
 import { ensurePersonalWorkspace, type Actor } from "@/services/workspaces";
 import { testDatabaseUrl } from "./database";
@@ -56,8 +56,10 @@ afterAll(async () => {
 
 describe("conversation model selection", () => {
   it("offers a curated Anthropic registry and keeps the administrator default explicit", () => {
-    expect(getAssistantModels()).toMatchObject({ defaultId: "anthropic/claude-sonnet-4.5", options: assistantModelOptions });
+    expect(getAssistantModels()).toMatchObject({ defaultId: "anthropic/claude-sonnet-5.5", options: assistantModelOptions });
     expect(assistantModelOptions.map((option) => option.id)).toEqual([haiku, "anthropic/claude-sonnet-4.5", "anthropic/claude-sonnet-5.5", opus]);
+    expect(prepareAssistantModel()(null).modelId).toBe("anthropic/claude-sonnet-5.5");
+    expect(gatewayModel("extraction").modelId).toBe("anthropic/claude-sonnet-4.5");
     vi.stubEnv("AI_MODEL", "anthropic/configured-model");
     expect(getAssistantModels().defaultId).toBe("anthropic/configured-model");
     const chooseModel = prepareAssistantModel();

@@ -8,7 +8,7 @@ import { api } from "@/lib/client-http";
 import { AssistantPanel } from "./assistant-panel";
 import { GatewaySettings } from "./gateway-settings";
 import { useVoiceSession, type SiftVoice } from "./use-voice-session";
-import { VoiceControls } from "./voice-controls";
+import { VoiceDetailsDialog } from "./voice-controls";
 
 export type Conversation = Awaited<ReturnType<typeof getConversation>>;
 export type ConversationList = Awaited<ReturnType<typeof listConversations>>;
@@ -30,6 +30,7 @@ export function AssistantShell({ children }: { children: React.ReactNode }) {
 }
 function AssistantShellContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [voiceDetailsOpen, setVoiceDetailsOpen] = useState(false);
   const [open, setOpen] = useState(false), [settingsOpen, setSettingsOpen] = useState(false), [page, setPage] = useState<PageRegistration | null>(null), [conversation, setConversation] = useState<Conversation | null>(null), [history, setHistory] = useState<ConversationList>([]), [loading, setLoading] = useState(false), [error, setError] = useState("");
   const registeredPage = useRef<PageRegistration | null>(null);
   const conversationRef = useRef(conversation), opening = useRef<Promise<Conversation> | null>(null);
@@ -96,12 +97,16 @@ function AssistantShellContent({ children }: { children: React.ReactNode }) {
     try { await ensureConversation(); }
     catch (error) { setError(error instanceof Error ? error.message : "Couldn’t open Sift."); }
   }
-  const voiceVisible = voice.busy || !!voice.error || !!voice.notice;
-  async function switchToText() { await voice.end(); await openPanel(true); }
+  async function showText(endVoice: boolean) {
+    if (endVoice) await voice.end();
+    setVoiceDetailsOpen(false);
+    await openPanel(true);
+    requestAnimationFrame(() => document.getElementById("sift-composer")?.focus());
+  }
   const pageLabel = page?.route.split("?")[0] === pathname ? page.title : pathname === "/library" ? "Your cookbook" : pathname === "/recipes/new" ? "Adding a recipe" : "Your cookbook";
   return <AssistantContext.Provider value={{ registerPage, openSettings, openAssistant: () => { void openPanel(true); }, voice }}>{children}
-    <AssistantPanel key={conversation?.id ?? "empty"} open={open} onOpenChange={openPanel} conversation={conversation} history={history} loading={loading} loadError={error} pageLabel={pageLabel} getPageContext={getPageContext} onSettings={openSettings} onNew={newConversation} onLoad={loadConversation} onHistory={refreshHistory} onConversationChanged={updateConversation} voice={voice} subscribeVoiceConversation={subscribeVoiceConversation} />
-    {voiceVisible && !open && <div className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-4 right-4 z-40 sm:left-auto sm:right-6 sm:w-[380px]"><VoiceControls voice={voice} compact onTranscript={openTranscript} onText={() => void switchToText()} /></div>}
+    <AssistantPanel key={conversation?.id ?? "empty"} open={open} onOpenChange={openPanel} conversation={conversation} history={history} loading={loading} loadError={error} pageLabel={pageLabel} getPageContext={getPageContext} onSettings={openSettings} onNew={newConversation} onLoad={loadConversation} onHistory={refreshHistory} onConversationChanged={updateConversation} voice={voice} onVoiceDetails={() => setVoiceDetailsOpen(true)} subscribeVoiceConversation={subscribeVoiceConversation} />
+    <VoiceDetailsDialog open={voiceDetailsOpen} onOpenChange={setVoiceDetailsOpen} voice={voice} onText={() => void showText(true)} onTranscript={() => void showText(false)} />
     <GatewaySettings open={settingsOpen} onOpenChange={setSettingsOpen} />
   </AssistantContext.Provider>;
 }

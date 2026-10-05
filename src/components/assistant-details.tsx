@@ -1,6 +1,5 @@
 import Link from "next/link";
 import type { Conversation } from "./assistant-shell";
-import { AiUsageDetails } from "./ai-usage-details";
 
 const actionLabels: Record<string, string> = { createGroceryList: "Grocery list saved", deriveGroceryList: "Grocery list saved", addGroceryItems: "Grocery items added", removeGroceryItem: "Grocery item removed", setGroceryItemChecked: "Checklist saved", createMealPlan: "Meal plan saved", addMealPlanEntry: "Meal added", removeMealPlanEntry: "Meal removed", startCookingSession: "Cook started", updateCookingProgress: "Cooking progress saved", finishCookingSession: "Cook finished", abandonCookingSession: "Cook ended", addCookingSessionNote: "Cooking note saved", createRecipe: "Recipe saved", updateRecipe: "Recipe updated", archiveRecipe: "Recipe archived", restoreArchivedRecipe: "Recipe returned to Library", restoreRecipeVersion: "Version restored", addRecipeNote: "Observation saved", setRecipeFavorite: "Favorites updated" };
 
@@ -10,6 +9,5 @@ export function AssistantDetails({ conversation, showReceipts, onNavigate }: { c
       const result = receipt.result && typeof receipt.result === "object" && !Array.isArray(receipt.result) ? receipt.result as Record<string, unknown> : {};
       return <li key={index} className="py-3 text-xs"><p className="font-medium">{actionLabels[receipt.toolName] || "Recipe change saved"}</p>{typeof result.changeSummary === "string" && <p className="mt-2 leading-relaxed text-muted-foreground">{result.changeSummary}</p>}{typeof result.recipeId === "string" && <Link href={`/recipes/${result.recipeId}${typeof result.sessionId === "string" ? `?cook=${result.sessionId}` : ""}`} onClick={onNavigate} className="mt-2 inline-flex min-h-9 items-center underline underline-offset-4">{typeof result.title === "string" ? result.title : "Open recipe"}</Link>}{typeof result.artifactId === "string" && <Link href={`/artifacts/${result.artifactId}`} onClick={onNavigate} className="mt-2 inline-flex min-h-9 items-center underline underline-offset-4">{typeof result.title === "string" ? result.title : "Open list or plan"}</Link>}</li>;
     })}</ul></details>}
-    <AiUsageDetails usage={conversation.usage} />
   </div>;
 }

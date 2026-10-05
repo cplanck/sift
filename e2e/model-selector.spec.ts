@@ -27,6 +27,7 @@ test("model selection persists per conversation through reload and history, and 
   const modelsResponse = await page.request.get("/api/assistant/models");
   expect(modelsResponse.headers()["cache-control"]).toContain("no-store");
   const models = await modelsResponse.json() as { defaultId: string; options: { id: string; label: string }[] };
+  expect(models.defaultId).toBe(sonnet);
   const defaultLabel = models.options.find((option) => option.id === models.defaultId)?.label ?? models.defaultId;
   expect(models.options).toEqual(expect.arrayContaining([expect.objectContaining({ id: haiku, label: "Claude Haiku 4.5" })]));
   await page.goto("/library");
@@ -44,7 +45,7 @@ test("model selection persists per conversation through reload and history, and 
   await panel.getByRole("button", { name: "New conversation", exact: true }).click();
   await expect(panel.getByRole("button", { name: `Assistant model: ${defaultLabel}`, exact: true })).toBeEnabled();
   await panel.getByRole("button", { name: "Conversation history", exact: true }).click();
-  await panel.getByRole("button", { name: /Quick dinner ideas/ }).click();
+  await page.getByRole("menuitem", { name: /Quick dinner ideas/ }).click();
   await panel.getByRole("button", { name: "Assistant model: Claude Haiku 4.5", exact: true }).click();
   await expect(page.getByRole("menuitemradio", { name: /^Claude Haiku 4\.5/ })).toBeChecked();
   await page.screenshot({ path: `test-results/model-selector-${testInfo.project.name}.png` });

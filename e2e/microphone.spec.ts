@@ -136,6 +136,7 @@ test("microphone choice persists, local meter releases capture, and voice uses t
   // constraint. Never mint a token or connect a paid ElevenLabs session in QA.
   await page.route("**/api/voice/sessions", (route) => route.fulfill({ status: 503, json: { error: "Provider boundary stopped by browser QA." } }));
   await page.getByRole("button", { name: "Talk to Sift", exact: true }).click();
+  await page.getByRole("button", { name: "Voice controls", exact: true }).click();
   await expect(page.getByRole("region", { name: "Sift voice", exact: true }).getByRole("alert")).toHaveText("Provider boundary stopped by browser QA.");
   expect(await page.evaluate(() => (window as unknown as MicWindow).micQa.requests)).toEqual([{ audio: { deviceId: { exact: "usb-mic" } } }]);
   expect(await page.evaluate(() => (window as unknown as MicWindow).micQa.stopped)).toBe(1);
@@ -281,6 +282,7 @@ test("devices stay selectable during voice startup and audio settings can end it
   try {
     for (const action of ["microphone", "speaker", "end"] as const) {
       await page.getByRole("button", { name: "Talk to Sift", exact: true }).click();
+      await page.getByRole("button", { name: "Voice controls", exact: true }).click();
       await expect(voice.getByRole("status")).toHaveText("Getting voice ready…");
       await expect.poll(() => pending.length).toBe(1);
       await voice.getByRole("button", { name: "Microphone settings", exact: true }).click();
@@ -303,6 +305,7 @@ test("devices stay selectable during voice startup and audio settings can end it
       await dialog.getByRole("button", { name: "Close", exact: true }).click();
       await expect(voice.getByText(action === "end" ? "Voice has stopped. You can test or change your audio devices." : "Audio device changed. Start voice again to use it.", { exact: true })).toBeVisible();
       await expect(voice.getByRole("status")).toHaveText("Voice is off");
+      await page.getByRole("dialog", { name: "Voice controls", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
       expect(providerStarts).toBe(0);
     }
     expect(await page.evaluate(() => (window as unknown as MicWindow).micQa.requests.length)).toBe(1);
