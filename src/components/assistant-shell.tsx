@@ -10,14 +10,15 @@ import { GatewaySettings } from "./gateway-settings";
 export type Conversation = Awaited<ReturnType<typeof getConversation>>;
 export type ConversationList = Awaited<ReturnType<typeof listConversations>>;
 type PageRegistration = ClientPageContext & { title: string };
-const AssistantContext = createContext<{ registerPage: (context: PageRegistration) => () => void; openSettings: () => void } | null>(null);
+const AssistantContext = createContext<{ registerPage: (context: PageRegistration) => () => void; openSettings: () => void; openAssistant: () => void } | null>(null);
 
 export function useAssistantPage(context: PageRegistration) {
   const shell = useContext(AssistantContext);
   const register = shell?.registerPage;
-  const { route, activeRecipeId, activeRecipeVersionId, title } = context;
-  useEffect(() => register?.({ route, activeRecipeId, activeRecipeVersionId, title }), [register, route, activeRecipeId, activeRecipeVersionId, title]);
+  const { route, activeRecipeId, activeRecipeVersionId, activeCookingSessionId, title } = context;
+  useEffect(() => register?.({ route, activeRecipeId, activeRecipeVersionId, activeCookingSessionId, title }), [register, route, activeRecipeId, activeRecipeVersionId, activeCookingSessionId, title]);
 }
+export function useOpenSift() { return useContext(AssistantContext)?.openAssistant; }
 export function useSiftSettings() { return useContext(AssistantContext)?.openSettings; }
 
 export function AssistantShell({ children }: { children: React.ReactNode }) {
@@ -33,8 +34,8 @@ export function AssistantShell({ children }: { children: React.ReactNode }) {
     setConversation((current) => updated === null ? null : current?.id === updated.id ? updated : current);
   }, []);
   const getPageContext = useCallback((): ClientPageContext => {
-    const route = window.location.pathname, context = registeredPage.current;
-    return context?.route === route ? { route, activeRecipeId: context.activeRecipeId, activeRecipeVersionId: context.activeRecipeVersionId } : { route };
+    const route = window.location.pathname + window.location.search, context = registeredPage.current;
+    return context?.route === route ? { route, activeRecipeId: context.activeRecipeId, activeRecipeVersionId: context.activeRecipeVersionId, activeCookingSessionId: context.activeCookingSessionId } : { route };
   }, []);
   const refreshHistory = useCallback(async () => {
     const records = await api<ConversationList>("/api/conversations"); setHistory(records); return records;
@@ -61,8 +62,8 @@ export function AssistantShell({ children }: { children: React.ReactNode }) {
     } catch (error) { setError(error instanceof Error ? error.message : "Couldn’t open Sift."); }
     finally { setLoading(false); }
   }
-  const pageLabel = page?.route === pathname ? page.title : pathname === "/library" ? "Your cookbook" : pathname === "/recipes/new" ? "Adding a recipe" : "Your cookbook";
-  return <AssistantContext.Provider value={{ registerPage, openSettings }}>{children}
+  const pageLabel = page?.route.split("?")[0] === pathname ? page.title : pathname === "/library" ? "Your cookbook" : pathname === "/recipes/new" ? "Adding a recipe" : "Your cookbook";
+  return <AssistantContext.Provider value={{ registerPage, openSettings, openAssistant: () => { void openPanel(true); } }}>{children}
     <AssistantPanel key={conversation?.id ?? "empty"} open={open} onOpenChange={openPanel} conversation={conversation} history={history} loading={loading} loadError={error} pageLabel={pageLabel} getPageContext={getPageContext} onSettings={openSettings} onNew={newConversation} onLoad={loadConversation} onHistory={refreshHistory} onConversationChanged={updateConversation} />
     <GatewaySettings open={settingsOpen} onOpenChange={setSettingsOpen} />
   </AssistantContext.Provider>;

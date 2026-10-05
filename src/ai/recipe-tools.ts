@@ -3,8 +3,10 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Database } from "@/db/connection";
 import { DomainError } from "@/domain/errors";
+import { cookingFinishSchema, cookingNoteSchema, cookingProgressSchema, cookingStartSchema } from "@/domain/cooking";
 import { recipeContentSchema } from "@/domain/recipe";
 import { assertConversationRun, runToolMutation } from "@/services/conversations";
+import { addCookingSessionNote, finishCookingSession, getCookingSession, listCookingHistory, startCookingSession, updateCookingProgress } from "@/services/cooking";
 import {
   addRecipeNote, createRecipe, getRecipe, listRecipeNotes, listRecipes,
   listVersions, restoreVersion, setFavorite, setRecipeStatus, updateRecipe,
@@ -14,6 +16,8 @@ import type { Actor } from "@/services/workspaces";
 type Run = { conversationId: string; runId: string };
 const recipeIdSchema = z.object({ recipeId: z.uuid() });
 const expectedRecipeSchema = recipeIdSchema.extend({ expectedVersionId: z.uuid() });
+const sessionIdSchema = z.object({ sessionId: z.uuid() });
+const expectedSessionSchema = cookingProgressSchema.pick({ expectedRevision: true }).extend({ sessionId: z.uuid() });
 
 export function safeAssistantError(error: unknown) {
   if (error instanceof DomainError) return { ok: false as const, code: error.code, error: error.message };
@@ -130,6 +134,60 @@ export function createRecipeTools(db: Database, actor: Actor, run: Run) {
       description: "Favorite or unfavorite a recipe for this user. This deterministic action does not create a recipe version.",
       inputSchema: recipeIdSchema.extend({ favorite: z.boolean() }),
       execute: async ({ recipeId, favorite }, { toolCallId }) => mutate("setRecipeFavorite", toolCallId, async (tx) => ({ recipeId, ...await setFavorite(tx, actor, recipeId, favorite) })),
+    }),
+    startCookingSession: tool({
+      description: "Start or resume making a recipe now, only when the user explicitly intends to cook now. Browsing, questions, and future meal planning do not start cooks. Pin the current recipe version and optionally select servings; this never changes canonical content.",
+      inputSchema: cookingStartSchema,
+      execute: async (input, { toolCallId }) => mutate("startCookingSession", toolCallId, async (tx) => {
+        const session = await startCookingSession(tx, actor, input);
+        return { sessionId: session.id, recipeId: session.recipeId, versionId: session.recipeVersionId, title: session.version.content.title, status: session.status, servings: session.servings, revision: session.revision, progress: session.progress };
+      }),
+    }),
+    getCookingSession: tool({
+      description: "Read an authorized cook's exact pinned recipe version, servings, saved progress, observations, and photo IDs. Use this for cooking guidance even when getRecipe now returns a newer canonical version. Only the person who started this cook may change it.",
+      inputSchema: sessionIdSchema,
+      execute: async ({ sessionId }) => safely(async () => { await authorize(); return { sessionId, ...await getCookingSession(db, actor, sessionId) }; }),
+    }),
+    updateCookingProgress: tool({
+      description: "Save the user's described ingredient or step checkoffs and current step for an active cook. Read getCookingSession first and preserve every other checkoff. Keys are zero-based sectionIndex:itemIndex; currentStep is a flattened zero-based instruction index. Pass the current revision to prevent lost changes. Optional servings apply only to this cook.",
+      inputSchema: cookingProgressSchema.extend({ sessionId: z.uuid() }),
+      execute: async ({ sessionId, ...input }, { toolCallId }) => mutate("updateCookingProgress", toolCallId, async (tx) => {
+        const session = await updateCookingProgress(tx, actor, sessionId, input);
+        return { sessionId: session.id, recipeId: session.recipeId, revision: session.revision, servings: session.servings, progress: session.progress };
+      }),
+    }),
+    finishCookingSession: tool({
+      description: "Mark an active cook completed when the user says they are finished. Rating and summary are optional; do not require wrap-up answers. Pass the current session revision. This preserves pinned history and does not change the recipe or create a recipe version.",
+      inputSchema: cookingFinishSchema.omit({ status: true }).extend({ sessionId: z.uuid() }),
+      execute: async ({ sessionId, ...input }, { toolCallId }) => mutate("finishCookingSession", toolCallId, async (tx) => {
+        const session = await finishCookingSession(tx, actor, sessionId, { ...input, status: "completed" });
+        return { sessionId: session.id, recipeId: session.recipeId, status: session.status, rating: session.rating, summary: session.summary, revision: session.revision };
+      }),
+    }),
+    abandonCookingSession: tool({
+      description: "End an active cook without marking it completed. Always requires native user approval, bound to the current session revision. Saved notes and pinned history remain available.",
+      inputSchema: expectedSessionSchema,
+      execute: async ({ sessionId, expectedRevision }, { toolCallId }) => mutate("abandonCookingSession", toolCallId, async (tx) => {
+        const session = await finishCookingSession(tx, actor, sessionId, { expectedRevision, status: "abandoned" });
+        return { sessionId: session.id, recipeId: session.recipeId, status: session.status, revision: session.revision };
+      }),
+    }),
+    addCookingSessionNote: tool({
+      description: "Save an observation about this particular cook, such as 'needed more salt'. This is the default for observations in cooking mode. It does not change the canonical recipe or add a general recipe note.",
+      inputSchema: cookingNoteSchema.extend({ sessionId: z.uuid() }),
+      execute: async ({ sessionId, body }, { toolCallId }) => mutate("addCookingSessionNote", toolCallId, async (tx) => {
+        const note = await addCookingSessionNote(tx, actor, sessionId, { body });
+        const session = await getCookingSession(tx, actor, sessionId);
+        return { sessionId, recipeId: session.recipeId, noteId: note.id, body: note.body };
+      }),
+    }),
+    listCookingHistory: tool({
+      description: "Read previous and active cooks for a recipe, including exact version numbers, servings, completion dates, ratings, and summaries. Use getCookingSession for one cook's notes, photos, or pinned instructions. This never restores or changes canonical versions.",
+      inputSchema: recipeIdSchema.extend({ offset: z.number().int().min(0).max(10000).default(0), limit: z.number().int().min(1).max(30).default(10) }),
+      execute: async ({ recipeId, offset, limit }) => safely(async () => {
+        await authorize(); const history = await listCookingHistory(db, actor, recipeId);
+        return { recipeId, total: history.length, cooks: history.slice(offset, offset + limit) };
+      }),
     }),
   };
 }

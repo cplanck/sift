@@ -9,21 +9,23 @@ import { deletePhotoObject, MAX_PHOTO_BYTES, r2, readPhotoObject, signPhotoUploa
 import { assertMembership, type Actor } from "./workspaces";
 import { getRecipe } from "./recipes";
 import { consumeLimit } from "./rate-limit";
+import { assertCookingSessionOwner } from "./cooking";
 
 const uploadSchema = z.object({
-  recipeId: z.uuid().optional(), purpose: z.enum(["recipe", "import"]),
+  recipeId: z.uuid().optional(), sessionId: z.uuid().optional(), purpose: z.enum(["recipe", "import", "cooking"]),
   contentType: z.enum(["image/jpeg", "image/png", "image/webp"]), byteSize: z.number().int().positive().max(MAX_PHOTO_BYTES),
-}).refine((data) => data.purpose === "recipe" ? !!data.recipeId : !data.recipeId, "Recipe photos need a recipe.");
+}).strict().refine((data) => data.purpose === "recipe" ? !!data.recipeId && !data.sessionId : data.purpose === "cooking" ? !!data.sessionId && !data.recipeId : !data.recipeId && !data.sessionId, "Choose a recipe or cooking session appropriate to this photo.");
 
 export async function preparePhotoUpload(db: Database, actor: Actor, input: unknown) {
   const data = uploadSchema.parse(input);
   await assertMembership(db, actor);
   if (data.recipeId) await getRecipe(db, actor, data.recipeId);
+  const session = data.sessionId ? await assertCookingSessionOwner(db, actor, data.sessionId) : null;
   r2(); // Validate provider settings before reserving an upload.
   await consumeLimit(db, actor, "photo", 60);
   const id = randomUUID(), objectKey = `uploads/workspaces/${actor.workspaceId}/${id}`;
   const url = await signPhotoUpload(objectKey, data.contentType, data.byteSize);
-  await db.insert(photos).values({ id, workspaceId: actor.workspaceId, recipeId: data.recipeId, purpose: data.purpose, objectKey, contentType: data.contentType, byteSize: data.byteSize, createdByUserId: actor.userId });
+  await db.insert(photos).values({ id, workspaceId: actor.workspaceId, recipeId: session?.recipeId ?? data.recipeId, sessionId: session?.id, purpose: data.purpose, objectKey, contentType: data.contentType, byteSize: data.byteSize, createdByUserId: actor.userId });
   return { id, url, expiresIn: 300 };
 }
 
@@ -47,6 +49,10 @@ export async function normalizePhoto(bytes: Uint8Array) {
 
 export async function finishPhotoUpload(db: Database, actor: Actor, id: string) {
   const photo = await getPhoto(db, actor, id);
+  if (photo.purpose === "cooking") {
+    if (!photo.sessionId) throw new DomainError("NOT_FOUND", "Cooking photo not found.");
+    await assertCookingSessionOwner(db, actor, photo.sessionId);
+  }
   if (photo.status === "ready") return { id: photo.id };
   await consumeLimit(db, actor, "photo_finalize", 60);
   const original = await readPhotoObject(photo.objectKey);
@@ -61,9 +67,10 @@ export async function finishPhotoUpload(db: Database, actor: Actor, id: string) 
       await assertMembership(tx, actor);
       const [current] = await tx.select().from(photos).where(and(eq(photos.id, id), eq(photos.workspaceId, actor.workspaceId))).for("update");
       if (!current) throw new DomainError("NOT_FOUND", "Photo not found.");
+      if (current.purpose === "cooking") await assertCookingSessionOwner(tx, actor, current.sessionId!);
       if (current.status === "ready") return false;
       await tx.update(photos).set({ status: "ready", objectKey, contentType: "image/webp", byteSize: normalized.bytes.byteLength, width: normalized.width, height: normalized.height }).where(and(eq(photos.id, id), eq(photos.workspaceId, actor.workspaceId)));
-      if (photo.recipeId) await tx.update(recipes).set({ coverPhotoId: photo.id }).where(and(eq(recipes.id, photo.recipeId), eq(recipes.workspaceId, actor.workspaceId), isNull(recipes.coverPhotoId)));
+      if (photo.recipeId && photo.purpose === "recipe") await tx.update(recipes).set({ coverPhotoId: photo.id }).where(and(eq(recipes.id, photo.recipeId), eq(recipes.workspaceId, actor.workspaceId), isNull(recipes.coverPhotoId)));
       return true;
     });
   } finally {

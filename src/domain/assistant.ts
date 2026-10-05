@@ -4,6 +4,7 @@ export const clientPageContextSchema = z.object({
   route: z.string().min(1).max(200),
   activeRecipeId: z.uuid().optional(),
   activeRecipeVersionId: z.uuid().optional(),
+  activeCookingSessionId: z.uuid().optional(),
 }).strict();
 export type ClientPageContext = z.infer<typeof clientPageContextSchema>;
 export interface AppContext extends ClientPageContext {

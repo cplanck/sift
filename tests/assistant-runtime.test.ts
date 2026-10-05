@@ -8,6 +8,7 @@ import { recipes, users } from "@/db/schema";
 import { assistantResponse } from "@/ai/assistant-runtime";
 import { resolveAssistantContext } from "@/ai/context";
 import { beginConversationTurn, createConversation, finishConversationTurn, getConversation } from "@/services/conversations";
+import { getActiveCookingSession, getCookingSession, listCookingHistory, startCookingSession, updateCookingProgress } from "@/services/cooking";
 import { createRecipe, getRecipe, listRecipeNotes, listVersions, updateRecipe } from "@/services/recipes";
 import { ensurePersonalWorkspace, type Actor } from "@/services/workspaces";
 import { testDatabaseUrl } from "./database";
@@ -272,6 +273,115 @@ describe("AssistantRuntime with real SDK loop, domain services, and PostgreSQL",
     await expect(resolveAssistantContext(db, actorA, { route: "/library", activeRecipeId: recipe.id })).rejects.toMatchObject({ code: "INVALID_INPUT" });
     await updateRecipe(db, actorA, recipe.id, { content: { ...recipe.version.content, title: "New title" }, expectedVersionId: recipe.version.id, changeSummary: "Concurrent rename" });
     await expect(resolveAssistantContext(db, actorA, { route: `/recipes/${recipe.id}`, activeRecipeVersionId: recipe.version.id })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("starts a cook only as an explicit tool action and journals duplicate starts once", async () => {
+    const recipe = await createRecipe(db, actorA, { content });
+    const conversation = await createConversation(db, actorA);
+    const discussion = modelWith(textReply("Simmer gently until it is ready."));
+    await (await assistantResponse(db, actorA, message(conversation.id, "How should I cook this?", recipe), { model: discussion })).text();
+    expect(await getActiveCookingSession(db, actorA, recipe.id)).toBeNull();
+    expect(JSON.stringify(discussion.doStreamCalls[0].prompt)).toContain("only when the user explicitly intends to cook now");
+    const callId = randomUUID();
+    const start = { recipeId: recipe.id, expectedVersionId: recipe.version.id, servings: 6 };
+    const model = modelWith(toolCall("startCookingSession", start, callId), toolCall("startCookingSession", start, callId), textReply("Started your cook for six."));
+    await (await assistantResponse(db, actorA, message(conversation.id, "I'm making this now for six.", recipe), { model })).text();
+    const session = await getActiveCookingSession(db, actorA, recipe.id);
+    expect(session).toMatchObject({ servings: 6, recipeVersionId: recipe.version.id, status: "active" });
+    expect(await listCookingHistory(db, actorA, recipe.id)).toHaveLength(1);
+    expect((await getConversation(db, actorA, conversation.id)).receipts.filter((receipt) => receipt.toolName === "startCookingSession")).toHaveLength(1);
+  });
+
+  it("uses pinned cooking context and saves progress, observations, and a lightweight finish without canonical edits", async () => {
+    const recipe = await createRecipe(db, actorA, { content });
+    const session = await startCookingSession(db, actorA, { recipeId: recipe.id, expectedVersionId: recipe.version.id });
+    const newer = await updateRecipe(db, actorA, recipe.id, { expectedVersionId: recipe.version.id, content: { ...recipe.version.content, title: "New canonical chili", instructionSections: [{ name: "", steps: ["Different later instructions."] }] }, changeSummary: "Later canonical change" });
+    const conversation = await createConversation(db, actorA);
+    const input = { ...message(conversation.id, "I finished simmering. Note that this batch needed more salt, then mark the cook done.", recipe), context: { route: `/recipes/${recipe.id}?cook=${session.id}`, activeRecipeId: recipe.id, activeRecipeVersionId: recipe.version.id, activeCookingSessionId: session.id } };
+    const model = modelWith(
+      toolCall("getCookingSession", { sessionId: session.id }),
+      toolCall("updateCookingProgress", { sessionId: session.id, expectedRevision: 1, progress: { checkedIngredients: ["0:0"], checkedSteps: ["0:0"], currentStep: 0 } }),
+      toolCall("addCookingSessionNote", { sessionId: session.id, body: "This batch needed more salt." }),
+      toolCall("finishCookingSession", { sessionId: session.id, expectedRevision: 2 }),
+      textReply("Cook finished. Your salt note is saved with this batch."),
+    );
+    const stream = await (await assistantResponse(db, actorA, input, { model })).text();
+    expect(stream).not.toContain("tool-approval-request");
+    expect(stream).toContain("Simmer gently.");
+    expect(stream).not.toContain("Different later instructions.");
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain('\\"surface\\":\\"cooking\\"');
+    expect(prompt).toContain(session.id);
+    expect(prompt).toContain(recipe.version.id);
+    expect(prompt).toContain("cookingProgress");
+    const saved = await getCookingSession(db, actorA, session.id);
+    expect(saved).toMatchObject({ status: "completed", revision: 3, rating: null, summary: null, recipeVersionId: recipe.version.id, progress: { checkedIngredients: ["0:0"], checkedSteps: ["0:0"], currentStep: 0 } });
+    expect(saved.notes.map((note) => note.body)).toEqual(["This batch needed more salt."]);
+    expect(await listRecipeNotes(db, actorA, recipe.id)).toEqual([]);
+    expect((await getRecipe(db, actorA, recipe.id)).version.id).toBe(newer.id);
+    expect(await listVersions(db, actorA, recipe.id)).toHaveLength(2);
+    const history = await resolveAssistantContext(db, actorA, { route: `/recipes/${recipe.id}` });
+    expect(history.recentCookingHistory.map((cook) => cook.id)).toEqual([session.id]);
+    const receipts = (await getConversation(db, actorA, conversation.id)).receipts.map((receipt) => receipt.toolName);
+    expect(receipts).toEqual(expect.arrayContaining(["updateCookingProgress", "addCookingSessionNote", "finishCookingSession"]));
+  });
+
+  it("requires native confirmation to abandon and rechecks the approved session revision", async () => {
+    for (const decision of ["approve", "deny", "stale"] as const) {
+      const recipe = await createRecipe(db, actorA, { content });
+      const session = await startCookingSession(db, actorA, { recipeId: recipe.id, expectedVersionId: recipe.version.id });
+      const conversation = await createConversation(db, actorA);
+      const input = { ...message(conversation.id, "I'm not making this after all. End this cook.", recipe), context: { route: `/recipes/${recipe.id}?cook=${session.id}`, activeRecipeVersionId: recipe.version.id, activeCookingSessionId: session.id } };
+      await (await assistantResponse(db, actorA, input, { model: modelWith(toolCall("abandonCookingSession", { sessionId: session.id, expectedRevision: 1 })) })).text();
+      expect((await getCookingSession(db, actorA, session.id)).status).toBe("active");
+      const saved = await getConversation(db, actorA, conversation.id);
+      const pending = saved.messages.flatMap((entry) => entry.parts).find((part) => isToolUIPart(part) && part.state === "approval-requested");
+      if (!pending || !isToolUIPart(pending) || pending.state !== "approval-requested") throw new Error("Missing native cooking approval");
+      expect(pending.approval.requestReason).toContain("Turkey Chili");
+      if (decision === "stale") await updateCookingProgress(db, actorA, session.id, { expectedRevision: 1, progress: { ...session.progress, checkedIngredients: ["0:0"] } });
+      await (await assistantResponse(db, actorA, { conversationId: conversation.id, requestId: randomUUID(), context: input.context, approval: { id: pending.approval.id, approved: decision !== "deny" } }, { model: modelWith(textReply("Your cook is saved.")) })).text();
+      expect((await getCookingSession(db, actorA, session.id)).status).toBe(decision === "approve" ? "abandoned" : "active");
+    }
+  });
+
+  it("validates cooking IDs and displayed versions against the authorized recipe and pinned session", async () => {
+    const recipe = await createRecipe(db, actorA, { content });
+    const other = await createRecipe(db, actorA, { content });
+    const foreign = await createRecipe(db, actorB, { content });
+    const session = await startCookingSession(db, actorA, { recipeId: recipe.id, expectedVersionId: recipe.version.id });
+    const otherSession = await startCookingSession(db, actorA, { recipeId: other.id, expectedVersionId: other.version.id });
+    const foreignSession = await startCookingSession(db, actorB, { recipeId: foreign.id, expectedVersionId: foreign.version.id });
+    const route = `/recipes/${recipe.id}`;
+    const page = await resolveAssistantContext(db, actorA, { route: `${route}?cook=${session.id}` });
+    expect(page.context).toMatchObject({ ...actorA, surface: "cooking", activeCookingSessionId: session.id, activeRecipeVersionId: recipe.version.id });
+    for (const input of [
+      { route: "/library", activeCookingSessionId: session.id },
+      { route: `${route}?cook=${session.id}`, activeCookingSessionId: otherSession.id },
+      { route, activeCookingSessionId: otherSession.id },
+      { route: `${route}?cook=${session.id}&cook=${otherSession.id}` },
+      { route: `${route}?cook=not-a-uuid` },
+    ]) await expect(resolveAssistantContext(db, actorA, input)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(resolveAssistantContext(db, actorA, { route, activeCookingSessionId: foreignSession.id })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const newer = await updateRecipe(db, actorA, recipe.id, { expectedVersionId: recipe.version.id, content, changeSummary: "New canonical version" });
+    await expect(resolveAssistantContext(db, actorA, { route, activeCookingSessionId: session.id, activeRecipeVersionId: newer.id })).rejects.toMatchObject({ code: "CONFLICT" });
+    const conversation = await createConversation(db, actorA);
+    const model = modelWith(textReply("Must not run"));
+    await expect(assistantResponse(db, actorA, { ...message(conversation.id, "Read this cook.", recipe), context: { route, activeCookingSessionId: foreignSession.id } }, { model })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(model.doStreamCalls).toHaveLength(0);
+  });
+
+  it("shows the specific paid-credit requirement without reflecting private provider text", async () => {
+    const conversation = await createConversation(db, actorA);
+    const secret = "private-request-content-never-display";
+    const failure = new APICallError({ message: secret, url: "https://gateway.example.test", requestBodyValues: { secret }, statusCode: 403, responseBody: `Free tier users do not have access to this model. Purchase paid credits. ${secret}`, isRetryable: false });
+    const model = modelWith([{ type: "stream-start", warnings: [] }, { type: "error", error: failure }]);
+    const stream = await (await assistantResponse(db, actorA, message(conversation.id, "Help with dinner."), { model })).text();
+    expect(stream).toContain("Purchase credits");
+    expect(stream).toContain("Adding a payment method alone");
+    expect(stream).not.toContain(secret);
+    const saved = await getConversation(db, actorA, conversation.id);
+    expect(saved.lastError).toContain("paid AI Gateway credits");
+    expect(JSON.stringify(saved)).not.toContain(secret);
   });
 
   it("sanitizes provider failures, persists failure state, and retains committed tool receipts", async () => {

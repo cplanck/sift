@@ -34,12 +34,12 @@ function putPhoto(url: string, blob: Blob, onProgress: (value: number) => void) 
   });
 }
 
-export function PhotoUpload({ recipeId, purpose, onUploaded }: { recipeId?: string; purpose: "recipe" | "import"; onUploaded: (id: string) => void | Promise<void> }) {
+export function PhotoUpload({ recipeId, sessionId, purpose, onUploaded }: { recipeId?: string; sessionId?: string; purpose: "recipe" | "import" | "cooking"; onUploaded: (id: string) => void | Promise<void> }) {
   const inputId = useId();
   const [files, setFiles] = useState<File[]>([]), [busy, setBusy] = useState(false), [error, setError] = useState(""), [stage, setStage] = useState(""), [progress, setProgress] = useState(0);
   return <div className="space-y-4 rounded-2xl border border-dashed p-5 sm:p-6">
-    <div><label htmlFor={inputId} className="text-sm font-medium">{purpose === "import" ? "Recipe photo" : "Add recipe photos"}</label><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{purpose === "import" ? "A clear photo of a recipe page or handwritten card. You’ll review the extracted recipe before saving." : "Keep photos of the finished dish here. Choose a cover for your Library."} JPEG, PNG, or WebP, up to 30 MB each.</p></div>
-    <Input id={inputId} type="file" accept="image/jpeg,image/png,image/webp" multiple={purpose === "recipe"} disabled={busy} className="h-auto min-h-11 py-2 file:mr-3 file:text-sm" onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); setError(""); setStage(""); }} />
+    <div><label htmlFor={inputId} className="text-sm font-medium">{purpose === "import" ? "Recipe photo" : purpose === "cooking" ? "Add cook photos" : "Add recipe photos"}</label><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{purpose === "import" ? "A clear photo of a recipe page or handwritten card. You’ll review the extracted recipe before saving." : purpose === "cooking" ? "Photos stay with this cook, separate from your recipe’s photos." : "Keep photos of the finished dish here. Choose a cover for your Library."} JPEG, PNG, or WebP, up to 30 MB each.</p></div>
+    <Input id={inputId} type="file" accept="image/jpeg,image/png,image/webp" multiple={purpose !== "import"} disabled={busy} className="h-auto min-h-11 py-2 file:mr-3 file:text-sm" onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); setError(""); setStage(""); }} />
     <Button disabled={busy || !files.length} onClick={async () => {
       setBusy(true); setError("");
       const selected = [...files];
@@ -48,7 +48,7 @@ export function PhotoUpload({ recipeId, purpose, onUploaded }: { recipeId?: stri
           const suffix = selected.length > 1 ? ` (${index + 1} of ${selected.length})` : "";
           setStage(`Preparing photo${suffix}`); setProgress(0);
           const blob = await resizePhoto(file);
-          const upload = await api<{ id: string; url: string }>("/api/photos/uploads", { body: { purpose, ...(recipeId ? { recipeId } : {}), contentType: blob.type, byteSize: blob.size } });
+          const upload = await api<{ id: string; url: string }>("/api/photos/uploads", { body: { purpose, ...(recipeId ? { recipeId } : {}), ...(sessionId ? { sessionId } : {}), contentType: blob.type, byteSize: blob.size } });
           setStage(`Uploading photo${suffix}`); await putPhoto(upload.url, blob, setProgress);
           setStage(`Finishing photo${suffix}`);
           await api(`/api/photos/${upload.id}/complete`, { method: "POST" });

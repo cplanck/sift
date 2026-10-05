@@ -9,24 +9,21 @@ import { recordModelUsage } from "@/services/ai-usage";
 import { resolveGatewayCredential } from "@/services/credentials";
 import type { Actor } from "@/services/workspaces";
 import { gatewayModel } from "./models";
+import { providerErrorMessage } from "./provider-errors";
 
 // Provider messages can contain request content or credentials. Only known
 // status codes cross into durable import errors, using application-owned text.
 export function extractionError(error: unknown): DomainError | null {
   const failure = RetryError.isInstance(error) ? error.lastError : error;
   if (!GatewayError.isInstance(failure) && !APICallError.isInstance(failure)) return null;
+  if (failure.statusCode !== undefined && [401, 402, 403, 404].includes(failure.statusCode)) {
+    const message = providerErrorMessage(failure);
+    if (message) return new DomainError("INVALID_INPUT", message);
+  }
   switch (failure.statusCode) {
     case 400:
     case 422:
       return new DomainError("INVALID_INPUT", "Sift couldn’t send this recipe for extraction. Check the configured model’s capabilities, or paste the recipe with Ingredients and Instructions headings.");
-    case 401:
-      return new DomainError("INVALID_INPUT", "The AI service rejected the configured Gateway key. Update the key, then try this import again.");
-    case 402:
-      return new DomainError("INVALID_INPUT", "The AI service needs billing setup or available credits. Check the Gateway account, then try this import again.");
-    case 403:
-      return new DomainError("INVALID_INPUT", "The AI service denied this import. Check the Gateway account’s billing, credits, and model access, then try again.");
-    case 404:
-      return new DomainError("INVALID_INPUT", "The configured extraction model is unavailable. Check the Gateway model setting, then try this import again.");
     default:
       return null;
   }

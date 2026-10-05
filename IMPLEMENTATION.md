@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-M4 — Assistant complete with the provider limitations documented below. M0 committed (`70aa08e`), M1 committed (`f2f0857`), M2 committed (`540a40e`), M3 committed (`893e564`). Next milestone: M5.
+M5 — Cooking complete. M0 committed (`70aa08e`), M1 committed (`f2f0857`), M2 committed (`540a40e`), M3 committed (`893e564`), M4 committed (`e858875`). Provider limitations remain documented below.
 
 ## Completed work
 
@@ -21,12 +21,14 @@ M4 — Assistant complete with the provider limitations documented below. M0 com
 - M4: persistent page-aware text assistant using AI SDK `ToolLoopAgent`, streamed responses, conversation history/rename/delete, scoped recipe tools, immutable agent edits, notes/favorites, native archive confirmations, and encrypted per-user Gateway settings.
 - User-requested usage accounting: each model invocation records its model, token counts, credential source, Gateway generation ID, and provider-reported USD cost. Conversation details and Settings show exact known charges and explicitly unknown costs; imports use the same ledger. Provider billing/authentication errors use clear application-owned UI messages.
 
+- M5: explicit Cook/Resume, exact-version cooking mode, revision-safe ingredient/step progress, per-cook servings, optional completion/rating/summary, confirmed abandonment, session-only notes/photos/history, assistant cooking tools/context, optional wake lock, and account-scoped offline recipes/cooks.
+
 ## Architectural decisions
 
 - Retain the supplied specification filename unchanged.
 - Use the current stable Next.js App Router. Load provider clients lazily so a build does not require live credentials; operations requiring missing configuration fail explicitly.
 - Bundle Inter locally, avoiding a build-time external font dependency.
-- Service worker caches only public assets and an offline document at M0. Account-scoped recent recipe storage belongs to M5.
+- Service worker caches only public assets and the offline document/scripts/styles. M5 stores explicit account-scoped recipe snapshots in IndexedDB; authenticated HTML and APIs remain uncached.
 - TypeScript 6 and ESLint 9 are pinned to the versions supported by the current Next.js lint plugins (ESLint 10 fails in the upstream React plugin). Revisit on a compatible plugin release.
 - Drizzle uses `pg` over PostgreSQL TCP for both Neon and local development, as supported by [Drizzle's Neon documentation](https://orm.drizzle.team/docs/connect-neon). Interactive transactions are required for bootstrap and later versioning. Production uses the Neon pooled connection string with TLS; local tests use isolated PostgreSQL 17, not an in-memory substitute.
 - UUIDs throughout, timezone-aware UTC timestamps, membership indexes and foreign keys. User creation invokes transactional personal-workspace bootstrap; authenticated entry repairs an interrupted initial bootstrap idempotently. Removed memberships are never silently recreated.
@@ -46,15 +48,18 @@ M4 — Assistant complete with the provider limitations documented below. M0 com
 - Usage is recorded at model-call start and end, before tools run. Started/interrupted calls without reported charges remain unpriced, never assumed free. USD uses fixed decimal storage and integer summation. Deleting a conversation retains its usage rows. Automatic SDK retries are disabled to avoid untracked attempts; Inngest retries extraction as separately metered invocations. Gateway remains the authority for final billing, including interruptions/retries for which no charge reaches the app.
 - AI SDK 7's streamed agent default can log raw provider errors; a stream error observer supplied through `prepareCall` replaces that default, and the UI stream has its own sanitized error handler. Regression tests verify billing errors are visible and private provider content is not logged. No custom fundamental agent loop is introduced.
 
+- Cooking sessions pin an immutable recipe version through a composite workspace/recipe/version foreign key. Starting is explicit and concurrent starts resume the same active cook for that user/recipe. Progress uses a revision check under a row lock. History is workspace-readable; only the starter can change a cook or add its observations/photos. Optional wrap-up can be retried idempotently. Notes/photos never alter canonical content or cover images. Agent abandonment uses native confirmation and the same services.
+- Offline storage retains at most 12 recent canonical recipes plus 8 cooking snapshots, within 24 MiB, with 512 KiB content and 2 MiB cover limits. Expiry is the earlier of the authenticated session expiry or seven days. A live authenticated scope check precedes cache population; sign-out, account switching and expiry clear data. Per-scope epochs block stale tabs and delayed image fetches from repopulating prior accounts. Offline checkoffs stay local with no synchronization queue; reconnecting reloads saved progress. Wake lock is optional and degrades gracefully.
+
 ## Deviations
 
-The user explicitly added per-agent billing/usage tracking during M4. It is implemented as scoped conversation/settings details and a durable call ledger, not an analytics dashboard. No other product or architecture deviations. The model registry preceded M4 only to support real M3 extraction.
+The user explicitly added per-agent billing/usage tracking during M4. It is implemented as scoped conversation/settings details and a durable call ledger, not an analytics dashboard. No other product or architecture deviations. The model registry preceded M4 only to support real M3 extraction. The user subsequently requested a model selector, deployment for testing Claude MCP ingestion, and a substantial UI refinement pass. Model selection is the next scoped addition; M6–M9 still proceed in specification order, with deployment preparation alongside them.
 
 ## Unresolved issues
 
-- Gateway and R2 credentials are configured locally. Gateway authentication/credit lookup works and reports $5 free credit, but the configured model returns HTTP 403 stating free-tier users need paid Gateway credits. The user enabled billing; a subsequent actual import still failed with that explicit eligibility restriction. Purchase paid Gateway credits to unlock the configured model; no model substitution was made. Live successful inference remains unverified.
+- Gateway is configured and live chat now works after the user purchased $20 in Gateway credits. R2 credentials are configured, with the browser CORS blocker below. No model substitution was needed.
 - R2 signed upload, normalization, private reads, cover assignment, unlisted image delivery and revocation passed against real storage. Browser upload preflight from `http://localhost:3003` still returns 403: configure the bucket CORS policy below. Current object credentials cannot read/manage bucket CORS (GetBucketCors also returns 403).
-- M5–M9 remain unimplemented. The V1 definition of done is not yet met. Test fixtures replace external transport only inside tests; the application contains no fake integration path.
+- M6–M9 remain unimplemented. The V1 definition of done is not yet met. Test fixtures replace external transport only inside tests; the application contains no fake integration path.
 
 ## Required manual/provider configuration
 
@@ -76,7 +81,7 @@ The user explicitly added per-agent billing/usage tracking during M4. It is impl
 10. **Inngest:** for local jobs set `INNGEST_DEV=1` and run `pnpm dlx inngest-cli@latest dev --host 127.0.0.1 --no-discovery -u http://localhost:3003/api/inngest`. The local dashboard is http://localhost:8288; it is running in this workspace. For production create an Inngest environment, set `INNGEST_EVENT_KEY` and `INNGEST_SIGNING_KEY`, then sync `https://your-domain/api/inngest` (or connect the Vercel integration). Production always requires signing; `INNGEST_DEV` does not disable this. The handler allows 120 seconds and checkpoints before that deadline. Structured paste imports work without a job service.
 11. **AI Gateway:** create a Vercel AI Gateway API key and set `AI_GATEWAY_API_KEY` on the server. No deployment or Vercel project is needed for this API-key path. Purchase paid Gateway credits if the selected model is unavailable to free-tier credit; adding a payment method alone did not unlock it in local verification. The centralized initial model is `anthropic/claude-sonnet-4.5`; optional `AI_MODEL` accepts an Anthropic Gateway model ID. No direct Anthropic key is needed. Chat, freeform pasted text, URLs without usable Recipe JSON-LD, and recipe-image extraction use this integration. Configuration, key, billing/credit and access failures appear explicitly in the UI.
 12. **Personal keys:** generate `CREDENTIAL_ENCRYPTION_KEY` with `openssl rand -base64 32`, store it only in server environment variables, and back it up securely. It has been generated locally without printing or committing it. Set a separate production key before enabling personal keys there. Changing or losing it makes existing encrypted keys unreadable; users must replace those credentials. Account menu → Sift settings lets each user save/replace/remove their personal Gateway key. It takes priority over the application key for chat and extraction.
-13. Playwright explicitly clears provider credentials in its isolated production server to verify missing-provider behavior without spending live provider credits. It uses a dedicated, public test-only encryption key. To finish live verification, fix R2 CORS, upload through the browser, purchase eligible Gateway credits, import a photo/URL, review corrections, and ask Sift to change a recipe. The real R2 server roundtrip and Gateway failure UI have already been exercised with temporary accounts/objects that were fully removed.
+13. Playwright explicitly clears provider credentials in its isolated production server to verify missing-provider behavior without spending live provider credits. It uses a dedicated, public test-only encryption key. To finish remaining live import/media verification, fix R2 CORS, upload through the browser, and import/review a photo or unstructured URL. Real Gateway chat with a recipe edit and cost accounting, the R2 server roundtrip, and Gateway failure UI have been exercised with temporary accounts/objects that were fully removed.
 
 ## Verification
 
@@ -92,10 +97,14 @@ Live M3 verification: actual Inngest event delivery advanced queued → processi
 
 M4 passed: lint, typecheck, all 86 Vitest tests, production build, and all 30 Playwright checks. Native SDK tests use a model-boundary test double with real PostgreSQL/domain services and cover version edits/note semantics, native approvals/denial/stale versions, archive restoration, forged histories and contexts, interrupted/disconnected streams, sanitized billing errors, atomic mutation receipts, encrypted credential ownership/tampering, and exact decimal usage totals. Browser tests exercise persistent panel/navigation, real conversation CRUD, encrypted settings, account usage, missing configuration, workspace isolation and forged requests on desktop/phone/tablet. A clearly test-only SSE boundary fixture additionally verifies approval controls, real recipe mutation receipts and visible billing errors; it is not a live-model assertion. Reviewed phone/desktop/tablet assistant screenshots. Fixed initial draft loss during loading and delayed background updates selecting an obsolete conversation. Security review found no remaining actionable authorization/credential/approval issue in the completed milestone.
 
+M5 passed: lint, typecheck, all 105 Vitest tests, production build, and all 45 Playwright checks across desktop/phone/tablet. Coverage includes concurrent starts, exact versions through canonical edits/restores, revision conflicts, lightweight/idempotent completion, session note/photo separation, workspace/starter isolation, native abandonment approval, offline snapshots/images/scaling, no offline writeback, expiry and account switching/sign-out. Inspected cooking/offline phone and tablet screenshots. Fixed browser-test setup that accidentally created an empty IndexedDB and isolated an existing mocked-stream test from service-worker routing; production paths remain real.
+
+Live Gateway verification (2026-10-05): adding a card alone left the account on the free-credit model restriction; purchasing credits resolved it. A real Sonnet 4.5 response succeeded, followed by a real browser assistant rename that created recipe version 2 and displayed $0.089073 in conversation usage. The temporary test account and recipe were removed, and the completed browser screenshot was inspected. Known free-tier restrictions now produce a specific paid-credit instruction without exposing raw provider text.
+
 Development-cache regression verified with isolated Chromium on port 3003: seeded a worker and deliberately corrupted cached Turbopack bootstrap, observed automatic Sift-only cache/worker removal and reload, then checked hydration/navigation/refresh with zero runtime errors. HttpOnly cookies, localStorage and unrelated caches survived. The recovery script is a native development-only head script because Next's queued `beforeInteractive` scripts themselves require a working bootstrap.
 
 In the Codex sandbox, Next.js/Turbopack and browser tests need local process/network permissions. A failed sandbox build can cache its port-binding failure; clearing `.next` and rerunning with the necessary permissions resolved it. No bundler or architecture change was needed.
 
 ## Next steps
 
-Implement M5 Cooking Sessions, cooking mode, session observations/photos/history and bounded account-scoped offline recipe availability. Continue sequentially through the remaining milestones.
+Implement the requested per-conversation Claude model selector. Continue with M6 artifacts, M7 ElevenLabs realtime voice, M8 authenticated MCP, and M9 UI/accessibility/deployment polish. Prepare production configuration so Claude can save a real recipe through the deployed MCP endpoint.

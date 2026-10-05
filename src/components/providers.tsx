@@ -38,7 +38,7 @@ function BrowserStatus() {
     return () => { window.removeEventListener("online", update); window.removeEventListener("offline", update); };
   }, []);
   return <>
-    {offline && <div role="status" className="fixed inset-x-0 top-0 z-50 flex justify-center gap-2 bg-foreground p-2 text-sm text-background"><WifiOff size={16} /> You’re offline. Reconnect to access your cookbook.</div>}
+    {offline && <div role="status" className="fixed inset-x-0 top-0 z-50 flex flex-wrap justify-center gap-2 bg-foreground p-2 text-sm text-background"><WifiOff size={16} /> You’re offline. Changes won’t save. <a href="/offline.html" className="underline underline-offset-2">Open saved recipes</a></div>}
     {waiting && <div role="status" className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-4 rounded-2xl border bg-background p-4 shadow-lg">
       <span className="text-sm">An update is ready.</span><Button size="sm" onClick={() => {
         navigator.serviceWorker.addEventListener("controllerchange", () => window.location.reload(), { once: true });

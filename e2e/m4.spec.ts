@@ -152,56 +152,62 @@ test("assistant boundaries reject other users, stale context, forged histories a
   await page.request.delete("/api/credentials/gateway", { headers });
 });
 
-test("browser stream boundary: native archive confirmation, real saved recipe receipt, and visible billing failure", async ({ page }, testInfo) => {
-  await page.emulateMedia({ colorScheme: "dark" });
-  await signUp(page.request);
-  const recipe = await createRecipe(page.request);
-  await page.goto(`/recipes/${recipe.id}`);
-  // Only the provider stream is replaced in this UI test. Auth, conversations,
-  // recipe reads/writes, and refreshes use real application endpoints. Native
-  // SDK model execution, approval security, and durable turns are separately
-  // covered by assistant-runtime.test.ts with its SDK MockLanguageModel.
-  const assistantId = crypto.randomUUID(), toolCallId = "browser-archive-call", approvalId = "browser-archive-approval";
-  let mode: "archive" | "billing" = "archive";
-  const requests: Record<string, unknown>[] = [];
-  await page.route("**/api/assistant", async (route) => {
-    const body = route.request().postDataJSON(); requests.push(body);
-    let chunks: unknown[];
-    if (mode === "billing") chunks = [{ type: "start", messageId: crypto.randomUUID() }, { type: "error", errorText: "The AI service denied this request. Check the Gateway account’s billing, credits, and model access." }, { type: "finish" }];
-    else if (body.approval) {
-      expect(body.approval).toEqual({ id: approvalId, approved: true });
-      expect(Object.keys(body).sort()).toEqual(["approval", "context", "conversationId", "requestId"]);
-      expect((await page.request.post(`/api/recipes/${recipe.id}/actions`, { headers, data: { action: "status", status: "archived" } })).status()).toBe(200);
-      chunks = [{ type: "start", messageId: assistantId }, { type: "tool-output-available", toolCallId, output: { ok: true, recipeId: recipe.id, title: recipeContent.title, status: "archived" } }, { type: "text-start", id: "archive-text" }, { type: "text-delta", id: "archive-text", delta: "Lemon Soup is archived. You can restore it from the Library." }, { type: "text-end", id: "archive-text" }, { type: "finish" }];
-    } else chunks = [{ type: "start", messageId: assistantId }, { type: "tool-input-available", toolCallId, toolName: "archiveRecipe", input: { recipeId: recipe.id, expectedVersionId: recipe.version.id } }, { type: "tool-approval-request", approvalId, toolCallId, reason: "Archive “Lemon Soup” from your Library? You can restore it later." }, { type: "finish" }];
-    await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "x-vercel-ai-ui-message-stream": "v1", "Cache-Control": "no-store" }, body: chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n" });
+test.describe("isolated provider stream fixture", () => {
+  // Playwright routing cannot reliably replace a request after a service
+  // worker takes control. Real worker/offline behavior is tested separately.
+  test.use({ serviceWorkers: "block" });
+
+  test("browser stream boundary: native archive confirmation, real saved recipe receipt, and visible billing failure", async ({ page }, testInfo) => {
+    await page.emulateMedia({ colorScheme: "dark" });
+    await signUp(page.request);
+    const recipe = await createRecipe(page.request);
+    await page.goto(`/recipes/${recipe.id}`);
+    // Only the provider stream is replaced in this UI test. Auth, conversations,
+    // recipe reads/writes, and refreshes use real application endpoints. Native
+    // SDK model execution, approval security, and durable turns are separately
+    // covered by assistant-runtime.test.ts with its SDK MockLanguageModel.
+    const assistantId = crypto.randomUUID(), toolCallId = "browser-archive-call", approvalId = "browser-archive-approval";
+    let mode: "archive" | "billing" = "archive";
+    const requests: Record<string, unknown>[] = [];
+    await page.route("**/api/assistant", async (route) => {
+      const body = route.request().postDataJSON(); requests.push(body);
+      let chunks: unknown[];
+      if (mode === "billing") chunks = [{ type: "start", messageId: crypto.randomUUID() }, { type: "error", errorText: "The AI service denied this request. Check the Gateway account’s billing, credits, and model access." }, { type: "finish" }];
+      else if (body.approval) {
+        expect(body.approval).toEqual({ id: approvalId, approved: true });
+        expect(Object.keys(body).sort()).toEqual(["approval", "context", "conversationId", "requestId"]);
+        expect((await page.request.post(`/api/recipes/${recipe.id}/actions`, { headers, data: { action: "status", status: "archived" } })).status()).toBe(200);
+        chunks = [{ type: "start", messageId: assistantId }, { type: "tool-output-available", toolCallId, output: { ok: true, recipeId: recipe.id, title: recipeContent.title, status: "archived" } }, { type: "text-start", id: "archive-text" }, { type: "text-delta", id: "archive-text", delta: "Lemon Soup is archived. You can restore it from the Library." }, { type: "text-end", id: "archive-text" }, { type: "finish" }];
+      } else chunks = [{ type: "start", messageId: assistantId }, { type: "tool-input-available", toolCallId, toolName: "archiveRecipe", input: { recipeId: recipe.id, expectedVersionId: recipe.version.id } }, { type: "tool-approval-request", approvalId, toolCallId, reason: "Archive “Lemon Soup” from your Library? You can restore it later." }, { type: "finish" }];
+      await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "x-vercel-ai-ui-message-stream": "v1", "Cache-Control": "no-store" }, body: chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n" });
+    });
+    await page.getByRole("button", { name: "Open Sift", exact: true }).click();
+    const panel = page.getByRole("dialog", { name: "sift", exact: true });
+    await expect(panel.getByRole("button", { name: "Conversation options", exact: true })).toBeEnabled();
+    await panel.getByRole("textbox", { name: "Message Sift", exact: true }).fill("Archive this recipe.");
+    await panel.getByRole("button", { name: "Send message", exact: true }).click();
+    await expect(panel.getByText("Archive “Lemon Soup” from your Library? You can restore it later.", { exact: true })).toBeVisible();
+    expect((await (await page.request.get(`/api/recipes/${recipe.id}`)).json()).recipe.status).toBe("active");
+    await page.screenshot({ path: `test-results/assistant-confirmation-${testInfo.project.name}.png` });
+    await panel.getByRole("button", { name: "Confirm archive", exact: true }).click();
+    await expect(panel.getByText("Recipe archived", { exact: true })).toBeVisible();
+    await expect(panel.getByRole("link", { name: "Lemon Soup", exact: true })).toBeVisible();
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).not.toHaveProperty("messages");
+    expect(requests[1]).not.toHaveProperty("messages");
+    expect((await (await page.request.get(`/api/recipes/${recipe.id}`)).json()).recipe.status).toBe("archived");
+    await panel.getByRole("button", { name: "Close Sift", exact: true }).click();
+    await expect(page.getByText("This recipe is archived.", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Open Sift", exact: true }).click();
+    await expect(panel.getByText("Recipe archived", { exact: true })).toBeVisible();
+    await panel.getByRole("button", { name: "New conversation", exact: true }).click();
+    await expect(panel.getByRole("button", { name: "Conversation options", exact: true })).toBeEnabled();
+    mode = "billing";
+    await panel.getByRole("textbox", { name: "Message Sift", exact: true }).fill("Find a soup.");
+    await panel.getByRole("button", { name: "Send message", exact: true }).click();
+    await expect(panel.getByRole("alert").filter({ hasText: "Gateway account’s billing, credits" })).toBeVisible();
+    await expect(panel.getByRole("textbox", { name: "Message Sift", exact: true })).toHaveValue("Find a soup.");
+    await expect(panel.getByRole("alert").filter({ hasText: "Gateway account’s billing, credits" })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
-  await page.getByRole("button", { name: "Open Sift", exact: true }).click();
-  const panel = page.getByRole("dialog", { name: "sift", exact: true });
-  await expect(panel.getByRole("button", { name: "Conversation options", exact: true })).toBeEnabled();
-  await panel.getByRole("textbox", { name: "Message Sift", exact: true }).fill("Archive this recipe.");
-  await panel.getByRole("button", { name: "Send message", exact: true }).click();
-  await expect(panel.getByText("Archive “Lemon Soup” from your Library? You can restore it later.", { exact: true })).toBeVisible();
-  expect((await (await page.request.get(`/api/recipes/${recipe.id}`)).json()).recipe.status).toBe("active");
-  await page.screenshot({ path: `test-results/assistant-confirmation-${testInfo.project.name}.png` });
-  await panel.getByRole("button", { name: "Confirm archive", exact: true }).click();
-  await expect(panel.getByText("Recipe archived", { exact: true })).toBeVisible();
-  await expect(panel.getByRole("link", { name: "Lemon Soup", exact: true })).toBeVisible();
-  expect(requests).toHaveLength(2);
-  expect(requests[0]).not.toHaveProperty("messages");
-  expect(requests[1]).not.toHaveProperty("messages");
-  expect((await (await page.request.get(`/api/recipes/${recipe.id}`)).json()).recipe.status).toBe("archived");
-  await panel.getByRole("button", { name: "Close Sift", exact: true }).click();
-  await expect(page.getByText("This recipe is archived.", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Open Sift", exact: true }).click();
-  await expect(panel.getByText("Recipe archived", { exact: true })).toBeVisible();
-  await panel.getByRole("button", { name: "New conversation", exact: true }).click();
-  await expect(panel.getByRole("button", { name: "Conversation options", exact: true })).toBeEnabled();
-  mode = "billing";
-  await panel.getByRole("textbox", { name: "Message Sift", exact: true }).fill("Find a soup.");
-  await panel.getByRole("button", { name: "Send message", exact: true }).click();
-  await expect(panel.getByRole("alert").filter({ hasText: "Gateway account’s billing, credits" })).toBeVisible();
-  await expect(panel.getByRole("textbox", { name: "Message Sift", exact: true })).toHaveValue("Find a soup.");
-  await expect(panel.getByRole("alert").filter({ hasText: "Gateway account’s billing, credits" })).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

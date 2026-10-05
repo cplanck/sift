@@ -36,6 +36,18 @@ describe("safe extraction failure handling", () => {
     expect(extractionError(retried)?.message).toBe(extractionError(error)?.message);
   });
 
+  it("explains the paid-credit requirement without exposing the nested provider response", () => {
+    const cause = new APICallError({ message: sensitive, url: "https://provider.example", requestBodyValues: {}, statusCode: 403,
+      responseBody: JSON.stringify({ error: { message: `Free tier users do not have access to this model. Upgrade to paid credits for unrestricted access. ${sensitive}` } }),
+    });
+    const error = new GatewayInternalServerError({ message: sensitive, statusCode: 403, cause });
+    const result = extractionError(error);
+    expect(result?.message).toContain("Purchase credits");
+    expect(result?.message).toContain("Adding a payment method alone");
+    expect(result?.message).not.toContain(sensitive);
+    expect(result?.cause).toBeUndefined();
+  });
+
   it("preserves transient failures for the durable retry path and ignores unrelated errors", () => {
     for (const status of [408, 429, 500, 502, 503]) expect(extractionError(providerError(status))).toBeNull();
     expect(extractionError(new Error(sensitive))).toBeNull();

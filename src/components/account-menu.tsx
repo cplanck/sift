@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { LogOut, Settings2, UserRound } from "lucide-react";
+import { clearOfflineData } from "@/lib/offline";
 import { authClient } from "@/lib/auth-client";
 import { ThemeToggle } from "./providers";
 import { Button } from "./ui/button";
@@ -17,6 +18,7 @@ export function AccountMenu({ name }: { name: string }) {
       <Button variant="outline" className="w-full" onClick={async () => { try {
         const result = await authClient.signOut();
         if (result.error) { setError("Couldn’t sign out. Try again."); return; }
+        await clearOfflineData();
         router.replace("/"); router.refresh();
       } catch { setError("Couldn’t sign out. Check your connection."); } }}><LogOut />Sign out</Button>
       {error && <p role="alert" className="mt-2 text-sm text-destructive">{error}</p>}

@@ -22,7 +22,7 @@ export async function getViewer(requestHeaders?: Headers) {
   const session = await auth().api.getSession({ headers: requestHeaders ?? await headers() });
   if (!session) return null;
   const workspaceId = await ensurePersonalWorkspace(database(), session.user.id);
-  return { userId: session.user.id, workspaceId, name: session.user.name, email: session.user.email };
+  return { userId: session.user.id, workspaceId, name: session.user.name, email: session.user.email, sessionExpiresAt: session.session.expiresAt.toISOString() };
 }
 
 export async function requireViewer() {

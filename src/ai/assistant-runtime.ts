@@ -1,7 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { APICallError, createAgentUIStreamResponse, isStepCount, isToolUIPart, RetryError, ToolLoopAgent, type InferUITools, type LanguageModel, type UIDataTypes, type UIMessage } from "ai";
-import { GatewayError } from "@ai-sdk/gateway";
+import { createAgentUIStreamResponse, isStepCount, isToolUIPart, ToolLoopAgent, type InferUITools, type LanguageModel, type UIDataTypes, type UIMessage } from "ai";
 import type { Database } from "@/db/connection";
 import { assistantRequestSchema } from "@/domain/assistant";
 import { DomainError } from "@/domain/errors";
@@ -10,27 +9,20 @@ import { resolveGatewayCredential } from "@/services/credentials";
 import { recordModelUsage } from "@/services/ai-usage";
 import { consumeLimit } from "@/services/rate-limit";
 import { getRecipe } from "@/services/recipes";
+import { getCookingSession } from "@/services/cooking";
 import type { Actor } from "@/services/workspaces";
 import { assistantInstructions, resolveAssistantContext } from "./context";
 import { gatewayModel } from "./models";
+import { providerErrorMessage } from "./provider-errors";
 import { createRecipeTools, safeAssistantError, type RecipeTools } from "./recipe-tools";
 
 export type SiftUIMessage = UIMessage<unknown, UIDataTypes, InferUITools<RecipeTools>>;
 const failedResponse = "Sift couldn’t finish that response. Reload the conversation and check your recipe before trying again.";
-const toolNames: (keyof RecipeTools)[] = ["searchRecipes", "getRecipe", "createRecipe", "updateRecipe", "archiveRecipe", "restoreArchivedRecipe", "restoreRecipeVersion", "listRecipeVersions", "listRecipeNotes", "addRecipeNote", "setRecipeFavorite"];
+const toolNames: (keyof RecipeTools)[] = ["searchRecipes", "getRecipe", "createRecipe", "updateRecipe", "archiveRecipe", "restoreArchivedRecipe", "restoreRecipeVersion", "listRecipeVersions", "listRecipeNotes", "addRecipeNote", "setRecipeFavorite", "startCookingSession", "getCookingSession", "updateCookingProgress", "finishCookingSession", "abandonCookingSession", "addCookingSessionNote", "listCookingHistory"];
 const discoveryTools: (keyof RecipeTools)[] = ["searchRecipes", "getRecipe", "createRecipe"];
 
 function responseError(error: unknown) {
-  const failure = RetryError.isInstance(error) ? error.lastError : error;
-  if (!GatewayError.isInstance(failure) && !APICallError.isInstance(failure)) return failedResponse;
-  switch (failure.statusCode) {
-    case 401: return "The AI service rejected the Gateway key. Update it in Settings, then try again.";
-    case 402: return "The AI service needs billing setup or available credits. Check the Gateway account, then try again.";
-    case 403: return "The AI service denied this request. Check the Gateway account’s billing, credits, and model access.";
-    case 404: return "The configured assistant model is unavailable. Check the Gateway model setting, then try again.";
-    case 429: return "The AI service is busy or has reached its rate limit. Please try again shortly.";
-    default: return failedResponse;
-  }
+  return providerErrorMessage(error) ?? failedResponse;
 }
 
 function settledMessages(messages: UIMessage[], currentApprovalId?: string): UIMessage[] {
@@ -108,7 +100,7 @@ export async function assistantResponse(db: Database, actor: Actor, input: unkno
     }),
     toolApproval: {
       archiveRecipe: async ({ recipeId, expectedVersionId }) => {
-        if (approvalIssued) return { type: "denied", reason: "Confirm the pending archive before archiving another recipe." };
+        if (approvalIssued) return { type: "denied", reason: "Confirm the pending action before proposing another action that needs approval." };
         approvalIssued = true;
         try {
           await assertConversationRun(db, actor, request.conversationId, run.runId);
@@ -116,6 +108,18 @@ export async function assistantResponse(db: Database, actor: Actor, input: unkno
           if (recipe.version.id !== expectedVersionId) throw new DomainError("CONFLICT", "The recipe changed. Read its current version before proposing an archive.");
           if (recipe.status !== "active") throw new DomainError("INVALID_INPUT", "Only an approved, active recipe can be archived.");
           return { type: "user-approval", reason: `Archive “${recipe.version.content.title}” from your Library? You can restore it later.` };
+        } catch (error) { return { type: "denied", reason: safeAssistantError(error).error }; }
+      },
+      abandonCookingSession: async ({ sessionId, expectedRevision }) => {
+        if (approvalIssued) return { type: "denied", reason: "Confirm the pending action before proposing another action that needs approval." };
+        approvalIssued = true;
+        try {
+          await assertConversationRun(db, actor, request.conversationId, run.runId);
+          const session = await getCookingSession(db, actor, sessionId);
+          if (session.startedByUserId !== actor.userId) throw new DomainError("NOT_FOUND", "Cooking session not found.");
+          if (session.revision !== expectedRevision) throw new DomainError("CONFLICT", "This cook changed. Read its saved progress before proposing to end it.");
+          if (session.status !== "active") throw new DomainError("INVALID_INPUT", "Only an active cook can be ended.");
+          return { type: "user-approval", reason: `End your cook of “${session.version.content.title}” without marking it completed? Your notes and history will be kept.` };
         } catch (error) { return { type: "denied", reason: safeAssistantError(error).error }; }
       },
     },

@@ -1,5 +1,7 @@
-import { bigint, boolean, foreignKey, index, integer, jsonb, numeric, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { bigint, boolean, doublePrecision, foreignKey, index, integer, jsonb, numeric, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 import type { RecipeContent, RecipeSource } from "@/domain/recipe";
+import type { CookingProgress } from "@/domain/cooking";
 import type { UIMessage } from "ai";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
@@ -86,6 +88,7 @@ export const recipeVersions = pgTable("recipe_versions", {
 }, (table) => [
   foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "recipe_versions_workspace_recipe_fk" }).onDelete("cascade"),
   uniqueIndex("recipe_versions_number_idx").on(table.recipeId, table.number),
+  uniqueIndex("recipe_versions_workspace_recipe_id_idx").on(table.workspaceId, table.recipeId, table.id),
   index("recipe_versions_workspace_recipe_idx").on(table.workspaceId, table.recipeId),
 ]);
 
@@ -108,11 +111,37 @@ export const recipeFavorites = pgTable("recipe_favorites", {
   index("recipe_favorites_workspace_user_idx").on(table.workspaceId, table.userId),
 ]);
 
+export const cookingSessions = pgTable("cooking_sessions", {
+  id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull(), recipeId: uuid("recipe_id").notNull(),
+  recipeVersionId: uuid("recipe_version_id").notNull(),
+  startedByUserId: uuid("started_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(), finishedAt: timestamp("finished_at", { withTimezone: true }),
+  status: text("status", { enum: ["active", "completed", "abandoned"] }).default("active").notNull(),
+  servings: doublePrecision("servings").notNull(), revision: integer("revision").default(1).notNull(),
+  progress: jsonb("progress").$type<CookingProgress>().notNull().default({ checkedIngredients: [], checkedSteps: [], currentStep: 0 }),
+  rating: integer("rating"), summary: text("summary"),
+}, (table) => [
+  foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "cooking_sessions_workspace_recipe_fk" }).onDelete("cascade"),
+  foreignKey({ columns: [table.workspaceId, table.recipeId, table.recipeVersionId], foreignColumns: [recipeVersions.workspaceId, recipeVersions.recipeId, recipeVersions.id], name: "cooking_sessions_exact_version_fk" }).onDelete("cascade"),
+  uniqueIndex("cooking_sessions_workspace_id_idx").on(table.workspaceId, table.id),
+  uniqueIndex("cooking_sessions_active_idx").on(table.workspaceId, table.recipeId, table.startedByUserId).where(sql`${table.status} = 'active'`),
+  index("cooking_sessions_workspace_recipe_idx").on(table.workspaceId, table.recipeId, table.startedAt),
+]);
+
+export const cookingSessionNotes = pgTable("cooking_session_notes", {
+  id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull(), sessionId: uuid("session_id").notNull(),
+  body: text("body").notNull(), createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }), createdAt: createdAt(),
+}, (table) => [
+  foreignKey({ columns: [table.workspaceId, table.sessionId], foreignColumns: [cookingSessions.workspaceId, cookingSessions.id], name: "cooking_notes_workspace_session_fk" }).onDelete("cascade"),
+  index("cooking_notes_workspace_session_idx").on(table.workspaceId, table.sessionId),
+]);
+
 export const photos = pgTable("photos", {
   id: uuid("id").defaultRandom().primaryKey(),
   workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
   recipeId: uuid("recipe_id"),
-  purpose: text("purpose", { enum: ["recipe", "import"] }).notNull(),
+  sessionId: uuid("session_id"),
+  purpose: text("purpose", { enum: ["recipe", "import", "cooking"] }).notNull(),
   status: text("status", { enum: ["pending", "ready"] }).default("pending").notNull(),
   objectKey: text("object_key").notNull().unique(),
   contentType: text("content_type").notNull(), byteSize: integer("byte_size").notNull(),
@@ -121,7 +150,9 @@ export const photos = pgTable("photos", {
   createdAt: createdAt(),
 }, (table) => [
   foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "photos_workspace_recipe_fk" }).onDelete("cascade"),
+  foreignKey({ columns: [table.workspaceId, table.sessionId], foreignColumns: [cookingSessions.workspaceId, cookingSessions.id], name: "photos_workspace_session_fk" }).onDelete("cascade"),
   index("photos_workspace_recipe_idx").on(table.workspaceId, table.recipeId),
+  index("photos_workspace_session_idx").on(table.workspaceId, table.sessionId),
 ]);
 
 export const recipeImports = pgTable("recipe_imports", {

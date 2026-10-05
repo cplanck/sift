@@ -75,7 +75,7 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
   useEffect(() => {
     let changed = false;
     for (const message of messages) for (const part of message.parts) {
-      if (!isToolUIPart(part) || part.state !== "output-available" || !["tool-createRecipe", "tool-updateRecipe", "tool-archiveRecipe", "tool-restoreArchivedRecipe", "tool-restoreRecipeVersion", "tool-addRecipeNote", "tool-setRecipeFavorite"].includes(part.type) || renderedMutations.current.has(part.toolCallId)) continue;
+      if (!isToolUIPart(part) || part.state !== "output-available" || !["tool-startCookingSession", "tool-updateCookingProgress", "tool-finishCookingSession", "tool-abandonCookingSession", "tool-addCookingSessionNote", "tool-createRecipe", "tool-updateRecipe", "tool-archiveRecipe", "tool-restoreArchivedRecipe", "tool-restoreRecipeVersion", "tool-addRecipeNote", "tool-setRecipeFavorite"].includes(part.type) || renderedMutations.current.has(part.toolCallId)) continue;
       renderedMutations.current.add(part.toolCallId);
       if (part.output && typeof part.output === "object" && "ok" in part.output && part.output.ok === true) changed = true;
     }
