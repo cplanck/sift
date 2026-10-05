@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-M5 — Cooking complete, with the requested model selector complete. Next milestone: M6 artifacts. M0 committed (`70aa08e`), M1 committed (`f2f0857`), M2 committed (`540a40e`), M3 committed (`893e564`), M4 committed (`e858875`), M5 committed (`b717991`). Provider limitations remain documented below.
+M6 — Grocery-list and meal-plan artifacts complete. Next: Vercel/Neon deployment and M8 MCP, before M7 voice, as explicitly requested. M0 committed (`70aa08e`), M1 committed (`f2f0857`), M2 committed (`540a40e`), M3 committed (`893e564`), M4 committed (`e858875`), M5 committed (`b717991`), requested model selection committed (`4cc8899`). Provider limitations remain documented below.
 
 ## Completed work
 
@@ -24,6 +24,8 @@ M5 — Cooking complete, with the requested model selector complete. Next milest
 - M5: explicit Cook/Resume, exact-version cooking mode, revision-safe ingredient/step progress, per-cook servings, optional completion/rating/summary, confirmed abandonment, session-only notes/photos/history, assistant cooking tools/context, optional wake lock, and account-scoped offline recipes/cooks.
 
 - Requested addition: conversation-specific Claude model selection with Haiku 4.5, Sonnet 4.5, Sonnet 5.5 and Opus 5.5; app-default reset and persisted selection.
+
+- M6: durable grouped grocery lists and meal plans, deterministic groceries from exact recipe versions and servings, revision-safe item/meal edits, optimistic checkoffs with rollback, explicit text copy/share, focused artifact pages, contextual Library links, and assistant tools with one current inline card per artifact.
 
 ## Architectural decisions
 
@@ -55,15 +57,19 @@ M5 — Cooking complete, with the requested model selector complete. Next milest
 
 - Conversation model selection is a nullable model ID separate from credentials. The central registry allowlists explicit choices; null follows the administrator’s AI_MODEL/default. Changes compare the prior selection and reject active replies/pending approvals. Each turn freezes its saved model under the conversation lock, and usage reports the actual invoked model. No automatic provider/model substitution occurs on failure.
 
+- Artifacts belong to a workspace and persist as validated structured JSON with stable item IDs. Every mutation checks membership and the expected revision under a row lock. Grocery derivation reads authorized immutable recipe versions, scales deterministically, preserves wording and provenance, and does not guess unit aggregation. Meal entries pin versions while allowing described meals and optional dates. Copy/share sends text only on explicit user action; artifact URLs remain authenticated. No permanent Grocery or Plan navigation was introduced.
+- Artifact mutation receipts contain only identity/title/kind/revision. Model reads page through complete rows with a 30 KB budget and revision/cursor metadata. The UI renders one current card per artifact, fetching authorized saved content; older receipts stay compact links, avoiding repeated full-list payloads. Storage limits are 1,000 grocery items, 100 groups, and 200 meal entries; individual external actions are further bounded. Offline artifact edits roll back without a synchronization queue.
+
 ## Deviations
 
-The user explicitly added per-agent billing/usage tracking during M4. It is implemented as scoped conversation/settings details and a durable call ledger, not an analytics dashboard. No other product or architecture deviations. The model registry preceded M4 only to support real M3 extraction. The user subsequently requested a model selector, deployment for testing Claude MCP ingestion, and a substantial UI refinement pass. Model selection is implemented as a scoped addition; M6–M9 still proceed in specification order, with deployment preparation alongside them.
+The user explicitly added per-agent billing/usage tracking during M4. It is implemented as scoped conversation/settings details and a durable call ledger, not an analytics dashboard. The model registry preceded M4 only to support real M3 extraction. The user subsequently requested a model selector, deployment for testing Claude MCP ingestion, and a substantial UI refinement pass. Model selection is implemented as a scoped addition. On 2026-10-05 the user explicitly selected this next sequence: finish M6, deploy to Vercel with Neon, implement M8 MCP before M7 voice, then refine the UI. This reorders milestones to validate Claude → reviewable recipe draft → saved Library content on a stable production URL before voice and visual polish; architecture and V1 scope remain unchanged.
 
 ## Unresolved issues
 
 - Gateway is configured and live chat now works after the user purchased $20 in Gateway credits. R2 credentials are configured, with the browser CORS blocker below. No model substitution was needed.
 - R2 signed upload, normalization, private reads, cover assignment, unlisted image delivery and revocation passed against real storage. Browser upload preflight from `http://localhost:3003` still returns 403: configure the bucket CORS policy below. Current object credentials cannot read/manage bucket CORS (GetBucketCors also returns 403).
-- M6–M9 remain unimplemented. The V1 definition of done is not yet met. Test fixtures replace external transport only inside tests; the application contains no fake integration path.
+- M7–M9 remain unimplemented. The V1 definition of done is not yet met. Test fixtures replace external transport only inside tests; the application contains no fake integration path.
+- Deployment preparation: Vercel project `cplancks-projects/sift` is linked to the repository, with the assigned domain `https://sift-roan.vercel.app`. It is not deployed yet. Fresh production auth/encryption secrets and the existing Gateway/R2 credentials (explicitly approved by the user) are configured only in Production. Neon free-plan provisioning is waiting for the user to click **Accept & Install** on Vercel's Neon Marketplace terms page; answering a chat confirmation does not submit that provider page. Production Inngest configuration is also outstanding.
 
 ## Required manual/provider configuration
 
@@ -107,10 +113,12 @@ M5 passed: lint, typecheck, all 105 Vitest tests, production build, and all 45 P
 
 Live Gateway verification (2026-10-05): adding a card alone left the account on the free-credit model restriction; purchasing credits resolved it. A real Sonnet 4.5 response succeeded, followed by a real browser assistant rename that created recipe version 2 and displayed $0.089073 in conversation usage. The temporary test account and recipe were removed, and the completed browser screenshot was inspected. Known free-tier restrictions now produce a specific paid-credit instruction without exposing raw provider text.
 
+M6 passed: lint, typecheck, all 130 Vitest tests, production build, and all 63 Playwright checks across desktop/phone/tablet. Coverage includes durable grouped checkoffs, revision conflicts/rollback, workspace isolation, exact-version/scaled grocery derivation, meal entries and dates, import-draft exclusion, text copy, assistant artifact context/tools/journaling, bounded Unicode paging, and one live card per artifact. Reviewed phone artifact-card/meal-plan screenshots and responsive overflow checks. Corrected the browser test to await the committed checkoff revision before reloading; the optimistic display alone was not proof of persistence. Concurrent model-change recovery now also restores newly arrived approval/message state.
+
 Development-cache regression verified with isolated Chromium on port 3003: seeded a worker and deliberately corrupted cached Turbopack bootstrap, observed automatic Sift-only cache/worker removal and reload, then checked hydration/navigation/refresh with zero runtime errors. HttpOnly cookies, localStorage and unrelated caches survived. The recovery script is a native development-only head script because Next's queued `beforeInteractive` scripts themselves require a working bootstrap.
 
 In the Codex sandbox, Next.js/Turbopack and browser tests need local process/network permissions. A failed sandbox build can cache its port-binding failure; clearing `.next` and rerunning with the necessary permissions resolved it. No bundler or architecture change was needed.
 
 ## Next steps
 
-Continue with M6 artifacts, M7 ElevenLabs realtime voice, M8 authenticated MCP, and M9 UI/accessibility/deployment polish. Prepare production configuration so Claude can save a real recipe through the deployed MCP endpoint.
+Finish M6 verification and commit, deploy to Vercel with Neon, implement M8 authenticated MCP and verify a Claude recipe import, then complete M7 ElevenLabs realtime voice and M9 UI/accessibility polish. The user explicitly approved this milestone reordering on 2026-10-05. A named Cloudflare tunnel remains an optional development test path; temporary Quick Tunnels do not support SSE and change hostnames, so they are not the chosen integration target.

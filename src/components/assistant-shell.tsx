@@ -15,8 +15,8 @@ const AssistantContext = createContext<{ registerPage: (context: PageRegistratio
 export function useAssistantPage(context: PageRegistration) {
   const shell = useContext(AssistantContext);
   const register = shell?.registerPage;
-  const { route, activeRecipeId, activeRecipeVersionId, activeCookingSessionId, title } = context;
-  useEffect(() => register?.({ route, activeRecipeId, activeRecipeVersionId, activeCookingSessionId, title }), [register, route, activeRecipeId, activeRecipeVersionId, activeCookingSessionId, title]);
+  const { route, activeRecipeId, activeRecipeVersionId, activeCookingSessionId, activeArtifactId, title } = context;
+  useEffect(() => register?.({ route, activeRecipeId, activeRecipeVersionId, activeCookingSessionId, activeArtifactId, title }), [register, route, activeRecipeId, activeRecipeVersionId, activeCookingSessionId, activeArtifactId, title]);
 }
 export function useOpenSift() { return useContext(AssistantContext)?.openAssistant; }
 export function useSiftSettings() { return useContext(AssistantContext)?.openSettings; }
@@ -35,7 +35,7 @@ export function AssistantShell({ children }: { children: React.ReactNode }) {
   }, []);
   const getPageContext = useCallback((): ClientPageContext => {
     const route = window.location.pathname + window.location.search, context = registeredPage.current;
-    return context?.route === route ? { route, activeRecipeId: context.activeRecipeId, activeRecipeVersionId: context.activeRecipeVersionId, activeCookingSessionId: context.activeCookingSessionId } : { route };
+    return context?.route === route ? { route, activeRecipeId: context.activeRecipeId, activeRecipeVersionId: context.activeRecipeVersionId, activeCookingSessionId: context.activeCookingSessionId, activeArtifactId: context.activeArtifactId } : { route };
   }, []);
   const refreshHistory = useCallback(async () => {
     const records = await api<ConversationList>("/api/conversations"); setHistory(records); return records;

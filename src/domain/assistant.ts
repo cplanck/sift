@@ -5,6 +5,7 @@ export const clientPageContextSchema = z.object({
   activeRecipeId: z.uuid().optional(),
   activeRecipeVersionId: z.uuid().optional(),
   activeCookingSessionId: z.uuid().optional(),
+  activeArtifactId: z.uuid().optional(),
 }).strict();
 export type ClientPageContext = z.infer<typeof clientPageContextSchema>;
 export interface AppContext extends ClientPageContext {
@@ -12,7 +13,6 @@ export interface AppContext extends ClientPageContext {
   workspaceId: string;
   surface: "library" | "recipe" | "cooking" | "conversation" | "artifact";
   activeCookingSessionId?: string;
-  activeArtifactId?: string;
 }
 const requestBase = {
   conversationId: z.uuid(), requestId: z.uuid(), context: clientPageContextSchema,

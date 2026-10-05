@@ -3,10 +3,13 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { inArray } from "drizzle-orm";
 import { APICallError, isToolUIPart, simulateReadableStream } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
+import { z } from "zod";
 import { connectDatabase } from "@/db/connection";
 import { recipes, users } from "@/db/schema";
 import { assistantResponse } from "@/ai/assistant-runtime";
 import { resolveAssistantContext } from "@/ai/context";
+import { createArtifact, deriveGroceryList, getArtifact, listArtifacts, setGroceryItemChecked } from "@/services/artifacts";
+import { artifactContentSchema } from "@/domain/artifact";
 import { beginConversationTurn, createConversation, finishConversationTurn, getConversation } from "@/services/conversations";
 import { getActiveCookingSession, getCookingSession, listCookingHistory, startCookingSession, updateCookingProgress } from "@/services/cooking";
 import { createRecipe, getRecipe, listRecipeNotes, listVersions, updateRecipe } from "@/services/recipes";
@@ -28,6 +31,7 @@ function textReply(text: string): ModelChunk[] {
 function modelWith(...steps: ModelChunk[][]) {
   return new MockLanguageModelV4({ doStream: steps.map((chunks) => ({ stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }) })) });
 }
+const artifactPageSchema = z.object({ artifactId: z.uuid(), revision: z.number(), offset: z.number(), limit: z.number(), total: z.number(), nextOffset: z.number().nullable(), content: artifactContentSchema });
 
 const { db, pool } = connectDatabase(testDatabaseUrl);
 const userIds = [randomUUID(), randomUUID()];
@@ -382,6 +386,172 @@ describe("AssistantRuntime with real SDK loop, domain services, and PostgreSQL",
     const saved = await getConversation(db, actorA, conversation.id);
     expect(saved.lastError).toContain("paid AI Gateway credits");
     expect(JSON.stringify(saved)).not.toContain(secret);
+  });
+
+  it("creates durable artifacts from Library and journals a repeated creation only once", async () => {
+    const conversation = await createConversation(db, actorA);
+    const callId = randomUUID();
+    const input = { title: "Agent grocery list", groups: [{ name: "Produce", items: [{ text: "2 lemons" }] }] };
+    const model = modelWith(toolCall("createGroceryList", input, callId), toolCall("createGroceryList", input, callId), textReply("Saved your grocery list."));
+    const stream = await (await assistantResponse(db, actorA, message(conversation.id, "Make a grocery list with two lemons."), { model })).text();
+    expect(model.doStreamCalls[0].tools?.map((entry) => entry.name)).toEqual(expect.arrayContaining(["createGroceryList", "createMealPlan", "listArtifacts", "getArtifact", "deriveGroceryList"]));
+    expect(stream).toContain('"artifactId"');
+    const saved = await listArtifacts(db, actorA, { query: input.title });
+    expect(saved).toHaveLength(1);
+    const reopened = await getArtifact(db, actorA, saved[0].id);
+    expect(reopened.content).toMatchObject({ kind: "grocery", groups: [{ name: "Produce", items: [{ text: "2 lemons", checked: false }] }] });
+    const receipts = (await getConversation(db, actorA, conversation.id)).receipts.filter((receipt) => receipt.toolName === "createGroceryList");
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].result).toEqual({ artifactId: reopened.id, kind: "grocery", title: reopened.title, revision: reopened.revision });
+  });
+
+  it("uses the focused artifact context and saves native checkoffs without touching recipes", async () => {
+    const recipe = await createRecipe(db, actorA, { content });
+    const list = await createArtifact(db, actorA, { kind: "grocery", title: "Counter list", groups: [{ name: "Produce", items: [{ text: "Lemons" }] }] });
+    if (list.content.kind !== "grocery") throw new Error("Expected a grocery list");
+    const itemId = list.content.groups[0].items[0].id;
+    const conversation = await createConversation(db, actorA);
+    const context = { route: `/artifacts/${list.id}`, activeArtifactId: list.id };
+    const input = { ...message(conversation.id, "I bought the lemons. Add fresh parsley to this list."), context };
+    const model = modelWith(
+      toolCall("getArtifact", { artifactId: list.id }),
+      toolCall("setGroceryItemChecked", { artifactId: list.id, expectedRevision: list.revision, itemId, checked: true }),
+      toolCall("addGroceryItems", { artifactId: list.id, expectedRevision: list.revision + 1, groupName: "Produce", items: [{ text: "Fresh parsley" }] }),
+      textReply("Lemons checked. Parsley added."),
+    );
+    await (await assistantResponse(db, actorA, input, { model })).text();
+    const prompt = JSON.stringify(model.doStreamCalls[0].prompt);
+    expect(prompt).toContain(list.id);
+    expect(prompt).toContain('\\"surface\\":\\"artifact\\"');
+    expect(prompt).toContain("artifactRevision");
+    expect(prompt).toContain("never claim to maintain pantry inventory");
+    const saved = await getArtifact(db, actorA, list.id);
+    if (saved.content.kind !== "grocery") throw new Error("Expected a grocery list");
+    expect(saved.content.groups[0].items).toEqual(expect.arrayContaining([expect.objectContaining({ id: itemId, checked: true }), expect.objectContaining({ text: "Fresh parsley", checked: false })]));
+    expect(await listVersions(db, actorA, recipe.id)).toHaveLength(1);
+    expect((await getConversation(db, actorA, conversation.id)).receipts.map((receipt) => receipt.toolName)).toEqual(expect.arrayContaining(["setGroceryItemChecked", "addGroceryItems"]));
+  });
+
+  it("derives an exact-version grocery list and saves a meal plan without starting a cook", async () => {
+    const recipe = await createRecipe(db, actorA, { content });
+    const conversation = await createConversation(db, actorA);
+    const model = modelWith(
+      toolCall("getRecipe", { recipeId: recipe.id }),
+      toolCall("deriveGroceryList", { title: "Chili shopping", recipes: [{ recipeId: recipe.id, versionId: recipe.version.id, servings: 8 }] }),
+      toolCall("createMealPlan", { title: "Chili dinner plan", entries: [{ date: "2026-10-12", meal: "Dinner", recipeId: recipe.id, versionId: recipe.version.id, servings: 8 }] }),
+      textReply("Saved the plan and its grocery list for eight."),
+    );
+    await (await assistantResponse(db, actorA, message(conversation.id, "Save a dinner plan for this chili next Monday and its grocery list for eight.", recipe), { model })).text();
+    const list = (await listArtifacts(db, actorA, { kind: "grocery", query: "Chili shopping" }))[0];
+    const grocery = await getArtifact(db, actorA, list.id);
+    if (grocery.content.kind !== "grocery") throw new Error("Expected a grocery list");
+    expect(grocery.content.groups.flatMap((group) => group.items).map((item) => item.text)).toEqual(["2 14-oz can beans", "1 tsp salt"]);
+    const plan = await getArtifact(db, actorA, (await listArtifacts(db, actorA, { kind: "meal-plan", query: "Chili dinner plan" }))[0].id);
+    expect(plan.content).toMatchObject({ kind: "meal-plan", entries: [{ recipeId: recipe.id, recipeVersionId: recipe.version.id, title: "Turkey Chili", servings: 8 }] });
+    expect(await getActiveCookingSession(db, actorA, recipe.id)).toBeNull();
+    expect(await listVersions(db, actorA, recipe.id)).toHaveLength(1);
+  });
+
+  it("rejects forged artifact page context and foreign artifact tools before leaking contents", async () => {
+    const own = await createArtifact(db, actorA, { kind: "grocery", title: "My list" });
+    const other = await createArtifact(db, actorA, { kind: "grocery", title: "Another list" });
+    const foreign = await createArtifact(db, actorB, { kind: "grocery", title: "Private foreign list", groups: [{ name: "", items: [{ text: "Foreign secret item" }] }] });
+    const conversation = await createConversation(db, actorA);
+    const model = modelWith(textReply("Must not run"));
+    const resolved = await resolveAssistantContext(db, actorA, { route: `/artifacts/${own.id}`, activeArtifactId: own.id });
+    expect(resolved.context).toMatchObject({ ...actorA, surface: "artifact", activeArtifactId: own.id });
+    expect(resolved.recipe).toBeNull();
+    for (const context of [
+      { route: "/library", activeArtifactId: own.id },
+      { route: `/artifacts/${own.id}`, activeArtifactId: other.id },
+      { route: `/artifacts/${own.id}`, activeRecipeId: randomUUID() },
+      { route: `/artifacts/${own.id}`, activeRecipeVersionId: randomUUID() },
+      { route: `/artifacts/${own.id}`, activeCookingSessionId: randomUUID() },
+    ]) await expect(assistantResponse(db, actorA, { ...message(conversation.id, "Use this list."), context }, { model })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(assistantResponse(db, actorA, { ...message(conversation.id, "Read this list."), context: { route: `/artifacts/${foreign.id}` } }, { model })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(model.doStreamCalls).toHaveLength(0);
+    const denied = modelWith(toolCall("getArtifact", { artifactId: foreign.id }), textReply("That list is unavailable."));
+    const stream = await (await assistantResponse(db, actorA, message(conversation.id, "Read that list."), { model: denied })).text();
+    expect(stream).toContain("NOT_FOUND");
+    expect(stream).not.toContain("Foreign secret item");
+    expect(stream).not.toContain("Private foreign list");
+  });
+
+  it("does not journal or overwrite an artifact mutation based on a stale revision", async () => {
+    const list = await createArtifact(db, actorA, { kind: "grocery", title: "Concurrent list", groups: [{ name: "", items: [{ text: "Rice" }] }] });
+    if (list.content.kind !== "grocery") throw new Error("Expected a grocery list");
+    const itemId = list.content.groups[0].items[0].id;
+    const checked = await setGroceryItemChecked(db, actorA, list.id, { expectedRevision: list.revision, itemId, checked: true });
+    const conversation = await createConversation(db, actorA);
+    const model = modelWith(toolCall("removeGroceryItem", { artifactId: list.id, expectedRevision: list.revision, itemId }), textReply("The list changed; the item is still saved."));
+    const stream = await (await assistantResponse(db, actorA, { ...message(conversation.id, "Remove the rice."), context: { route: `/artifacts/${list.id}` } }, { model })).text();
+    expect(stream).toContain("CONFLICT");
+    expect((await getArtifact(db, actorA, list.id)).content).toEqual(checked.content);
+    expect((await getArtifact(db, actorA, list.id)).revision).toBe(checked.revision);
+    expect((await getConversation(db, actorA, conversation.id)).receipts.filter((receipt) => receipt.toolName === "removeGroceryItem")).toEqual([]);
+  });
+
+  it("pages artifact reads across group boundaries while retaining IDs and recipe provenance", async () => {
+    const list = await createArtifact(db, actorA, { kind: "grocery", title: "Paged list", groups: Array.from({ length: 2 }, (_, group) => ({ name: `Group ${group}`, items: Array.from({ length: 125 }, (_, index) => ({ text: `Item ${group}:${index}` })) })) });
+    const recipe = await createRecipe(db, actorA, { content });
+    const derived = await deriveGroceryList(db, actorA, { title: "Paged recipe source", recipes: [{ recipeId: recipe.id, versionId: recipe.version.id, servings: 8 }] });
+    const plan = await createArtifact(db, actorA, { kind: "meal-plan", title: "Paged plan", entries: Array.from({ length: 120 }, (_, index) => ({ meal: "Dinner", title: `Meal ${index}` })) });
+    const conversation = await createConversation(db, actorA);
+    const model = modelWith(
+      toolCall("getArtifact", { artifactId: list.id, offset: 0, limit: 100 }),
+      toolCall("getArtifact", { artifactId: list.id, offset: 100, limit: 100 }),
+      toolCall("getArtifact", { artifactId: list.id, offset: 200, limit: 100 }),
+      toolCall("getArtifact", { artifactId: derived.id }),
+      toolCall("getArtifact", { artifactId: plan.id, offset: 100, limit: 100 }),
+      textReply("The saved lists and plan are available."),
+    );
+    await (await assistantResponse(db, actorA, message(conversation.id, "Read my saved lists and plan."), { model })).text();
+    const saved = await getConversation(db, actorA, conversation.id);
+    const pages = saved.messages.flatMap((entry) => entry.parts.flatMap((part) => isToolUIPart(part) && part.type === "tool-getArtifact" && part.state === "output-available" ? [artifactPageSchema.parse(part.output)] : []));
+    expect(pages.map((page) => ({ offset: page.offset, limit: page.limit, total: page.total, nextOffset: page.nextOffset }))).toEqual([
+      { offset: 0, limit: 100, total: 250, nextOffset: 100 }, { offset: 100, limit: 100, total: 250, nextOffset: 200 }, { offset: 200, limit: 100, total: 250, nextOffset: null },
+      { offset: 0, limit: 40, total: 2, nextOffset: null }, { offset: 100, limit: 100, total: 120, nextOffset: null },
+    ]);
+    if (list.content.kind !== "grocery" || pages[1].content.kind !== "grocery" || pages[3].content.kind !== "grocery" || pages[4].content.kind !== "meal-plan") throw new Error("Unexpected artifact kinds");
+    const itemIds = pages.slice(0, 3).flatMap((page) => page.content.kind === "grocery" ? page.content.groups.flatMap((group) => group.items.map((item) => item.id)) : []);
+    expect(itemIds).toEqual(list.content.groups.flatMap((group) => group.items.map((item) => item.id)));
+    expect(pages[1].content.groups.map((group) => group.id)).toEqual(list.content.groups.map((group) => group.id));
+    expect(pages[1].content.groups.map((group) => group.items.length)).toEqual([25, 75]);
+    expect(pages[3].content.groups[0].items[0].source).toEqual({ recipeId: recipe.id, versionId: recipe.version.id, servings: 8 });
+    expect(pages[4].content.entries.map((entry) => entry.title)).toEqual(Array.from({ length: 20 }, (_, index) => `Meal ${index + 100}`));
+    expect(saved.receipts).toEqual([]);
+  });
+
+  it("bounds large artifact reads by bytes and stores small mutation receipts instead of snapshots", async () => {
+    const list = await createArtifact(db, actorA, { kind: "grocery", title: "Maximum-size grocery list", groups: Array.from({ length: 5 }, (_, group) => ({ name: `Group ${group}`, items: Array.from({ length: 200 }, (_, index) => ({ text: `${"材".repeat(990)}${String(group * 200 + index).padStart(10, "0")}` })) })) });
+    if (list.content.kind !== "grocery") throw new Error("Expected a grocery list");
+    const itemId = list.content.groups[0].items[0].id;
+    const conversation = await createConversation(db, actorA);
+    const model = modelWith(
+      toolCall("getArtifact", { artifactId: list.id }),
+      toolCall("setGroceryItemChecked", { artifactId: list.id, expectedRevision: list.revision, itemId, checked: true }),
+      textReply("Your first item is checked."),
+    );
+    await (await assistantResponse(db, actorA, { ...message(conversation.id, "Check the first item on this list."), context: { route: `/artifacts/${list.id}` } }, { model })).text();
+    const saved = await getConversation(db, actorA, conversation.id);
+    const output = saved.messages.flatMap((entry) => entry.parts).find((part) => isToolUIPart(part) && part.type === "tool-getArtifact" && part.state === "output-available");
+    if (!output || !isToolUIPart(output) || output.state !== "output-available") throw new Error("Missing artifact read output");
+    const page = artifactPageSchema.parse(output.output);
+    if (page.content.kind !== "grocery") throw new Error("Expected a grocery page");
+    const items = page.content.groups.flatMap((group) => group.items);
+    expect(page.total).toBe(1000);
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.length).toBeLessThan(40);
+    expect(items[0].text).toBe(list.content.groups[0].items[0].text);
+    expect(page.nextOffset).toBe(items.length);
+    expect(Buffer.byteLength(JSON.stringify(output.output), "utf8")).toBeLessThan(32_768);
+    const receipt = saved.receipts.find((entry) => entry.toolName === "setGroceryItemChecked");
+    expect(receipt?.result).toEqual({ artifactId: list.id, kind: "grocery", title: list.title, revision: list.revision + 1 });
+    expect(Buffer.byteLength(JSON.stringify(receipt?.result), "utf8")).toBeLessThan(512);
+    const reloaded = await getArtifact(db, actorA, list.id);
+    if (reloaded.content.kind !== "grocery") throw new Error("Expected a grocery list");
+    expect(reloaded.content.groups.flatMap((group) => group.items)).toHaveLength(1000);
+    expect(reloaded.content.groups[0].items[0].checked).toBe(true);
   });
 
   it("sanitizes provider failures, persists failure state, and retains committed tool receipts", async () => {

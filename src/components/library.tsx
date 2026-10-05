@@ -1,8 +1,9 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, BookOpen, Heart, Plus, Search, X } from "lucide-react";
+import { ArrowRight, BookOpen, CalendarDays, Heart, ListChecks, Plus, Search, X } from "lucide-react";
 import { type RecipeSummary, searchLibrary } from "@/domain/recipe";
+import type { ArtifactSummary } from "@/domain/artifact";
 import type { listPendingImports } from "@/services/imports";
 import { AccountMenu } from "./account-menu";
 import { Brand, SiftMark } from "./brand";
@@ -12,7 +13,7 @@ import { PendingImports } from "./pending-imports";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
-export function LibraryView({ initialRecipes, initialImports, name }: { initialRecipes: RecipeSummary[]; initialImports: Awaited<ReturnType<typeof listPendingImports>>; name: string }) {
+export function LibraryView({ initialRecipes, initialImports, recentArtifacts, name }: { initialRecipes: RecipeSummary[]; initialImports: Awaited<ReturnType<typeof listPendingImports>>; recentArtifacts: ArtifactSummary[]; name: string }) {
   const [favoriteChanges, setFavoriteChanges] = useState<{ source: RecipeSummary[]; values: Record<string, boolean> }>({ source: initialRecipes, values: {} }), [query, setQuery] = useState(""), [favorites, setFavorites] = useState(false), [status, setStatus] = useState("current");
   const recipes = initialRecipes.map((recipe) => {
     const favorite = favoriteChanges.source === initialRecipes ? favoriteChanges.values[recipe.id] : undefined;
@@ -41,6 +42,7 @@ export function LibraryView({ initialRecipes, initialImports, name }: { initialR
         </div>
         <div className="mb-10 mt-9 flex flex-wrap items-start justify-between gap-5"><div><h1 className="text-3xl font-semibold tracking-[-.04em] md:text-4xl">{favorites ? "Your favorites." : `Hello, ${name.split(" ")[0]}.`}</h1><p className="mt-2 text-muted-foreground">What are we cooking today?</p><span className="sr-only">Library</span></div><Button asChild><Link href="/recipes/new"><Plus />Add recipe</Link></Button></div>
         {!query && !favorites && status !== "archived" && <PendingImports initial={initialImports} />}
+        {!query && !favorites && status !== "archived" && recentArtifacts.length > 0 && <section aria-labelledby="recent-artifacts-heading" className="mb-10"><h2 id="recent-artifacts-heading" className="mb-4 font-medium">On your counter</h2><div className="grid gap-3 sm:grid-cols-2">{recentArtifacts.map((artifact) => { const Icon = artifact.kind === "grocery" ? ListChecks : CalendarDays; return <Link key={artifact.id} href={`/artifacts/${artifact.id}`} className="flex min-w-0 items-center gap-3 rounded-2xl border p-4 hover:bg-muted/30"><Icon className="size-5 shrink-0 text-muted-foreground" /><span className="min-w-0"><span className="block truncate text-sm font-medium">{artifact.title}</span><span className="mt-1 block text-xs text-muted-foreground">{artifact.kind === "grocery" ? "Grocery list" : "Meal plan"}</span></span><ArrowRight className="ml-auto size-4 shrink-0 text-muted-foreground" /></Link>; })}</div><p className="mt-3 text-xs text-muted-foreground">Ask Sift to find an older list or plan.</p></section>}
         {!query && !favorites && status !== "archived" && recent.length > 0 && <section aria-labelledby="recent-heading" className="mb-10"><div className="mb-4 flex items-center justify-between"><h2 id="recent-heading" className="font-medium">Recent</h2><a href="#all-recipes" className="flex min-h-11 items-center gap-1 text-sm text-muted-foreground">View all <ArrowRight size={14} /></a></div>
           <div className="grid auto-cols-[148px] grid-flow-col gap-4 overflow-x-auto pb-3 sm:auto-cols-[180px]">{recent.map((recipe) => <Link key={recipe.id} href={`/recipes/${recipe.id}`} className="group min-w-0 rounded-xl focus-visible:outline-2 focus-visible:outline-ring"><RecipeThumbnail photoId={recipe.coverPhotoId} className="aspect-[4/3] w-full transition-colors group-hover:bg-border" /><h3 className="mt-3 truncate text-sm font-medium">{recipe.title}</h3><p className="mt-1 text-xs text-muted-foreground">{recipe.totalMinutes ? `${recipe.totalMinutes} min` : "Your recipe"}</p></Link>)}</div>
         </section>}

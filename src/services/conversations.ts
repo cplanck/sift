@@ -17,7 +17,7 @@ const modelSchema = z.object({
   expectedModelId: z.string().min(1).max(200).nullable(),
 }).strict();
 const hasPendingApproval = (messages: UIMessage[]) => messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested"));
-const interrupted = "The previous reply was interrupted. Some changes may have been saved; review the recipe before asking again.";
+const interrupted = "The previous reply was interrupted. Some changes may have been saved; review your saved changes before asking again.";
 
 async function scopedConversation(db: Executor, actor: Actor, id: string) {
   await assertMembership(db, actor);

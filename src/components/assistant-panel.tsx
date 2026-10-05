@@ -11,6 +11,8 @@ import type { Conversation, ConversationList } from "./assistant-shell";
 import { AssistantMessage } from "./assistant-message";
 import { AssistantDetails } from "./assistant-details";
 import { ModelSelector } from "./model-selector";
+import { ARTIFACT_CHANGED } from "./use-artifact";
+import { artifactPreviewSchema } from "./artifact-card";
 import { SiftMark } from "./brand";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -55,6 +57,15 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
   });
   const streaming = status === "submitted" || status === "streaming", busy = streaming || serverBusy || loading || actionBusy || reloading;
   const pendingApproval = messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested" && !part.approval.isAutomatic));
+  const liveArtifactReceipts = useMemo(() => {
+    const latest = new Map<string, string>();
+    for (const message of messages) for (const [index, part] of message.parts.entries()) {
+      if (!isToolUIPart(part) || part.state !== "output-available" || !part.output || typeof part.output !== "object" || !("ok" in part.output) || part.output.ok !== true) continue;
+      const artifact = artifactPreviewSchema.safeParse(part.output);
+      if (artifact.success) latest.set(artifact.data.artifactId, `${message.id}:${index}`);
+    }
+    return new Set(latest.values());
+  }, [messages]);
   const reloadSaved = useCallback(async () => {
     if (!conversation) return;
     setReloading(true); setActionError("");
@@ -76,9 +87,12 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
   useEffect(() => {
     let changed = false;
     for (const message of messages) for (const part of message.parts) {
-      if (!isToolUIPart(part) || part.state !== "output-available" || !["tool-startCookingSession", "tool-updateCookingProgress", "tool-finishCookingSession", "tool-abandonCookingSession", "tool-addCookingSessionNote", "tool-createRecipe", "tool-updateRecipe", "tool-archiveRecipe", "tool-restoreArchivedRecipe", "tool-restoreRecipeVersion", "tool-addRecipeNote", "tool-setRecipeFavorite"].includes(part.type) || renderedMutations.current.has(part.toolCallId)) continue;
+      if (!isToolUIPart(part) || part.state !== "output-available" || !["tool-createGroceryList", "tool-deriveGroceryList", "tool-addGroceryItems", "tool-removeGroceryItem", "tool-setGroceryItemChecked", "tool-createMealPlan", "tool-addMealPlanEntry", "tool-removeMealPlanEntry", "tool-startCookingSession", "tool-updateCookingProgress", "tool-finishCookingSession", "tool-abandonCookingSession", "tool-addCookingSessionNote", "tool-createRecipe", "tool-updateRecipe", "tool-archiveRecipe", "tool-restoreArchivedRecipe", "tool-restoreRecipeVersion", "tool-addRecipeNote", "tool-setRecipeFavorite"].includes(part.type) || renderedMutations.current.has(part.toolCallId)) continue;
       renderedMutations.current.add(part.toolCallId);
-      if (part.output && typeof part.output === "object" && "ok" in part.output && part.output.ok === true) changed = true;
+      if (part.output && typeof part.output === "object" && "ok" in part.output && part.output.ok === true) {
+        changed = true;
+        if ("artifactId" in part.output && typeof part.output.artifactId === "string") window.dispatchEvent(new CustomEvent(ARTIFACT_CHANGED, { detail: { id: part.output.artifactId } }));
+      }
     }
     if (changed) router.refresh();
   }, [messages, router]);
@@ -111,14 +125,14 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
         }}>Confirm delete</Button><Button size="sm" variant="ghost" disabled={actionBusy} onClick={() => setAction(null)}>Cancel</Button></div></div>}
         <div ref={scrollArea} onScroll={(event) => { const target = event.currentTarget; nearBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight < 100; }} className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-5 py-6" role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation messages">
           {loading && !conversation ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Opening your conversation…</p> : !messages.length && <div className="py-6 sm:py-10"><SiftMark className="mb-6 size-10 text-muted-foreground" /><h2 className="text-2xl font-medium tracking-tight">What’s cooking?</h2><p className="mt-4 text-sm leading-7 text-muted-foreground">Ask about a recipe, save an idea, or make a dish your own. I can see which recipe you’re reading.</p><div className="mt-6 flex flex-wrap gap-2">{["What can I cook tonight?", "Help me save a recipe"].map((prompt) => <Button key={prompt} variant="outline" size="sm" onClick={() => setInput(prompt)}>{prompt}</Button>)}</div></div>}
-          {messages.map((message) => <AssistantMessage key={message.id} message={message} busy={busy} onApproval={(id, approved) => { void approve(id, approved); }} onNavigate={() => onOpenChange(false)} />)}
+          {messages.map((message) => <AssistantMessage key={message.id} message={message} busy={busy} liveArtifactReceipts={liveArtifactReceipts} onApproval={(id, approved) => { void approve(id, approved); }} onNavigate={() => onOpenChange(false)} />)}
           {(streaming || serverBusy) && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />{serverBusy && !streaming ? "Sift is finishing the saved reply…" : status === "submitted" ? "Thinking…" : "Sift is replying…"}</p>}
           {(error || clientError || savedError) && <div role="alert" className="rounded-xl border p-4"><p className="text-sm leading-relaxed text-destructive">{error?.message || clientError || savedError}</p><p className="mt-2 text-xs leading-relaxed text-muted-foreground">Check the saved results before sending another message.</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={reloading || streaming} onClick={() => { void reloadSaved(); }}><RefreshCw />Reload saved conversation</Button><Button size="sm" variant="ghost" onClick={onSettings}><Settings2 />Sift settings</Button></div></div>}
           {(loadError || actionError) && <p role="alert" className="text-sm text-destructive">{loadError || actionError}</p>}
           {conversation && <AssistantDetails conversation={conversation} showReceipts={!!(error || clientError || savedError)} onNavigate={() => onOpenChange(false)} />}
           {!conversation && !loading && loadError && <Button variant="outline" onClick={() => onOpenChange(true)}>Try again</Button>}
         </div>
-        <form className="border-t bg-background px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]" onSubmit={(event) => { event.preventDefault(); void submit(); }}>{conversation && <ModelSelector conversation={conversation} disabled={busy || pendingApproval} onBusy={setActionBusy} onChanged={onConversationChanged} />}<div className="relative"><Textarea aria-label="Message Sift" disabled={loading || !conversation} value={input} onChange={(event) => setInput(event.target.value)} maxLength={8000} placeholder="Ask Sift…" className="max-h-44 min-h-24 resize-none rounded-2xl bg-muted/35 pb-12 pr-4 text-base sm:text-sm" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} /><Button type="submit" size="icon" aria-label="Send message" disabled={busy || pendingApproval || !input.trim() || !conversation} className="absolute bottom-2 right-2 size-9 rounded-xl">{streaming ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div><p className="mt-2 text-center text-[11px] leading-relaxed text-muted-foreground">{pendingApproval ? "Respond to the confirmation above to continue." : "Recipe changes are kept in version history."}</p></form>
+        <form className="border-t bg-background px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]" onSubmit={(event) => { event.preventDefault(); void submit(); }}>{conversation && <ModelSelector conversation={conversation} disabled={busy || pendingApproval} onBusy={setActionBusy} onChanged={(saved) => { setMessages(saved.messages as SiftUIMessage[]); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); onConversationChanged(saved); }} />}<div className="relative"><Textarea aria-label="Message Sift" disabled={loading || !conversation} value={input} onChange={(event) => setInput(event.target.value)} maxLength={8000} placeholder="Ask Sift…" className="max-h-44 min-h-24 resize-none rounded-2xl bg-muted/35 pb-12 pr-4 text-base sm:text-sm" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} /><Button type="submit" size="icon" aria-label="Send message" disabled={busy || pendingApproval || !input.trim() || !conversation} className="absolute bottom-2 right-2 size-9 rounded-xl">{streaming ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div><p className="mt-2 text-center text-[11px] leading-relaxed text-muted-foreground">{pendingApproval ? "Respond to the confirmation above to continue." : "Recipe changes are kept in version history."}</p></form>
       </>}
     </SheetContent>
   </Sheet>;

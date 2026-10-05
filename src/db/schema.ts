@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { bigint, boolean, doublePrecision, foreignKey, index, integer, jsonb, numeric, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 import type { RecipeContent, RecipeSource } from "@/domain/recipe";
 import type { CookingProgress } from "@/domain/cooking";
+import type { ArtifactContent } from "@/domain/artifact";
 import type { UIMessage } from "ai";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
@@ -184,6 +185,16 @@ export const usageLimits = pgTable("usage_limits", {
   key: text("key").primaryKey(), userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   count: integer("count").default(1).notNull(), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 }, (table) => [index("usage_limits_expires_idx").on(table.expiresAt)]);
+
+export const artifacts = pgTable("artifacts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  kind: text("kind", { enum: ["grocery", "meal-plan"] }).notNull(), title: text("title").notNull(),
+  revision: integer("revision").default(1).notNull(), content: jsonb("content").$type<ArtifactContent>().notNull(),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  updatedByUserId: uuid("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [index("artifacts_workspace_updated_idx").on(table.workspaceId, table.updatedAt)]);
 
 export const gatewayCredentials = pgTable("gateway_credentials", {
   id: uuid("id").defaultRandom().primaryKey(),

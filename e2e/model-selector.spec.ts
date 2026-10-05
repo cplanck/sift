@@ -102,13 +102,19 @@ test("model updates enforce ownership, allowed models, revisions and active repl
     await page.goto("/library");
     let panel = await openSift(page);
     await expect(panel.getByRole("button", { name: /^Assistant model: Claude / })).toBeDisabled();
+    await pool.query("UPDATE conversations SET active_run_id=NULL,lease_expires_at=NULL WHERE id=$1", [id]);
+    await page.reload();
+    panel = await openSift(page);
+    await expect(panel.getByRole("button", { name: /^Assistant model: Claude / })).toBeEnabled();
+    // Another window receives a confirmation after this panel loaded. A failed
+    // model save must reconcile the live chat's approval state as well as its DTO.
     const messages: UIMessage[] = [{ id: crypto.randomUUID(), role: "assistant", parts: [{ type: "tool-archiveRecipe", toolCallId: "pending-archive", state: "approval-requested", input: { recipeId: crypto.randomUUID(), expectedVersionId: crypto.randomUUID() }, approval: { id: "pending-approval", requestReason: "Archive this recipe?" } }] }];
     await pool.query("UPDATE conversations SET active_run_id=NULL,lease_expires_at=NULL,messages=$1::jsonb WHERE id=$2", [JSON.stringify(messages), id]);
     const response = await page.request.patch(path, { headers, data: change });
     expect(response.status()).toBe(409);
     expect(await response.json()).toMatchObject({ error: "Approve or decline the pending action before changing models." });
-    await page.reload();
-    panel = await openSift(page);
+    await panel.getByRole("button", { name: /^Assistant model: Claude / }).click();
+    await page.getByRole("menuitemradio", { name: /^Claude Haiku 4\.5/ }).click();
     await expect(panel.getByText("Archive this recipe?", { exact: true })).toBeVisible();
     await expect(panel.getByRole("button", { name: /^Assistant model: Claude / })).toBeDisabled();
     expect((await (await page.request.get(`/api/conversations/${id}`)).json()).modelId).toBeNull();

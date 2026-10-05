@@ -17,9 +17,10 @@ import { providerErrorMessage } from "./provider-errors";
 import { createRecipeTools, safeAssistantError, type RecipeTools } from "./recipe-tools";
 
 export type SiftUIMessage = UIMessage<unknown, UIDataTypes, InferUITools<RecipeTools>>;
-const failedResponse = "Sift couldn’t finish that response. Reload the conversation and check your recipe before trying again.";
-const toolNames: (keyof RecipeTools)[] = ["searchRecipes", "getRecipe", "createRecipe", "updateRecipe", "archiveRecipe", "restoreArchivedRecipe", "restoreRecipeVersion", "listRecipeVersions", "listRecipeNotes", "addRecipeNote", "setRecipeFavorite", "startCookingSession", "getCookingSession", "updateCookingProgress", "finishCookingSession", "abandonCookingSession", "addCookingSessionNote", "listCookingHistory"];
-const discoveryTools: (keyof RecipeTools)[] = ["searchRecipes", "getRecipe", "createRecipe"];
+const failedResponse = "Sift couldn’t finish that response. Reload the conversation and review your saved changes before trying again.";
+const artifactTools: (keyof RecipeTools)[] = ["listArtifacts", "getArtifact", "createGroceryList", "deriveGroceryList", "addGroceryItems", "removeGroceryItem", "setGroceryItemChecked", "createMealPlan", "addMealPlanEntry", "removeMealPlanEntry"];
+const toolNames: (keyof RecipeTools)[] = ["searchRecipes", "getRecipe", "createRecipe", "updateRecipe", "archiveRecipe", "restoreArchivedRecipe", "restoreRecipeVersion", "listRecipeVersions", "listRecipeNotes", "addRecipeNote", "setRecipeFavorite", "startCookingSession", "getCookingSession", "updateCookingProgress", "finishCookingSession", "abandonCookingSession", "addCookingSessionNote", "listCookingHistory", ...artifactTools];
+const discoveryTools: (keyof RecipeTools)[] = ["searchRecipes", "getRecipe", "createRecipe", ...artifactTools];
 
 function responseError(error: unknown) {
   return providerErrorMessage(error) ?? failedResponse;
