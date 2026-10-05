@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { LanguageModelUsage } from "ai";
 import type { Database } from "@/db/connection";
-import { aiUsage, conversations, conversationTurns, recipeImports } from "@/db/schema";
+import { aiUsage, conversations, conversationTurns, recipeImports, voiceSessions } from "@/db/schema";
 import { DomainError } from "@/domain/errors";
 import { assertMembership, type Actor } from "./workspaces";
 
@@ -55,5 +55,13 @@ export async function getUsageSummary(db: Database, actor: Actor, conversationId
   let costUnits = 0n, knownCosts = 0;
   for (const row of rows) if (row.costUsd !== null) { const [whole, fraction = ""] = row.costUsd.split("."); costUnits += BigInt(whole) * 10_000_000_000n + BigInt(fraction.padEnd(10, "0")); knownCosts++; }
   const reportedCostUsd = knownCosts ? `${costUnits / 10_000_000_000n}.${(costUnits % 10_000_000_000n).toString().padStart(10, "0")}` : null;
-  return { calls: rows.length, inputTokens: rows.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0), outputTokens: rows.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0), reportedCostUsd, unpricedCalls: rows.length - knownCosts, models: [...new Set(rows.map((row) => row.model))], userKeyCalls: rows.filter((row) => row.credentialSource === "user").length, appKeyCalls: rows.filter((row) => row.credentialSource === "app").length };
+  const voiceRows = await db.select({ providerConversationId: voiceSessions.providerConversationId, durationSeconds: voiceSessions.durationSeconds, costUsd: voiceSessions.costUsd, credits: voiceSessions.credits }).from(voiceSessions)
+    .where(and(eq(voiceSessions.workspaceId, actor.workspaceId), eq(voiceSessions.userId, actor.userId), ...(conversationId ? [eq(voiceSessions.conversationId, conversationId)] : [])));
+  const issued = voiceRows.filter((row) => row.providerConversationId !== null);
+  let voiceCost = 0n, voicePriced = 0;
+  for (const row of issued) if (row.costUsd !== null) { const [whole, fraction = ""] = row.costUsd.split("."); voiceCost += BigInt(whole) * 10_000_000_000n + BigInt(fraction.padEnd(10, "0")); voicePriced++; }
+  const voice = { sessions: issued.length, reportedDurationSeconds: issued.reduce((sum, row) => sum + (row.durationSeconds ?? 0), 0),
+    reportedCostUsd: voicePriced ? `${voiceCost / 10_000_000_000n}.${(voiceCost % 10_000_000_000n).toString().padStart(10, "0")}` : null,
+    reportedCredits: issued.some((row) => row.credits !== null) ? issued.reduce((sum, row) => sum + (row.credits ?? 0), 0) : null, unpricedSessions: issued.length - voicePriced };
+  return { calls: rows.length, inputTokens: rows.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0), outputTokens: rows.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0), reportedCostUsd, unpricedCalls: rows.length - knownCosts, models: [...new Set(rows.map((row) => row.model))], userKeyCalls: rows.filter((row) => row.credentialSource === "user").length, appKeyCalls: rows.filter((row) => row.credentialSource === "app").length, voice };
 }

@@ -4,6 +4,7 @@ import type { RecipeContent, RecipeSource } from "@/domain/recipe";
 import type { CookingProgress } from "@/domain/cooking";
 import type { ArtifactContent } from "@/domain/artifact";
 import type { UIMessage } from "ai";
+import type { ClientPageContext } from "@/domain/assistant";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
 const updatedAt = () => timestamp("updated_at", { withTimezone: true }).defaultNow().notNull();
@@ -388,3 +389,31 @@ export const aiUsage = pgTable("ai_usage", {
   costUsd: numeric("cost_usd", { precision: 20, scale: 10 }), generationId: text("generation_id"),
   createdAt: createdAt(), updatedAt: updatedAt(),
 }, (table) => [index("ai_usage_workspace_user_idx").on(table.workspaceId, table.userId, table.createdAt), index("ai_usage_conversation_idx").on(table.conversationId)]);
+
+export const voiceSessions = pgTable("voice_sessions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  authSessionId: uuid("auth_session_id").references(() => sessions.id, { onDelete: "set null" }),
+  conversationId: uuid("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+  providerConversationId: text("provider_conversation_id").unique(), agentId: text("agent_id"),
+  status: text("status", { enum: ["preparing", "ready", "ended", "failed"] }).notNull().default("preparing"),
+  context: jsonb("context").$type<ClientPageContext>().notNull(), revision: integer("revision").notNull().default(0),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
+  activeRunId: uuid("active_run_id").references(() => conversationTurns.id, { onDelete: "set null" }),
+  lastUserCount: integer("last_user_count").notNull().default(0), lastProviderTurn: integer("last_provider_turn").notNull().default(-1), lastFingerprint: text("last_fingerprint"),
+  durationSeconds: integer("duration_seconds"), costUsd: numeric("cost_usd", { precision: 20, scale: 10 }),
+  credits: bigint("credits", { mode: "number" }), usageStatus: text("usage_status"),
+  createdAt: createdAt(), endedAt: timestamp("ended_at", { withTimezone: true }), updatedAt: updatedAt(),
+}, (table) => [index("voice_sessions_user_conversation_idx").on(table.workspaceId, table.userId, table.conversationId), index("voice_sessions_auth_session_idx").on(table.authSessionId)]);
+
+export const voiceTurns = pgTable("voice_turns", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  voiceSessionId: uuid("voice_session_id").notNull().references(() => voiceSessions.id, { onDelete: "cascade" }),
+  fingerprint: text("fingerprint").notNull(), providerTurn: integer("provider_turn").notNull(), userCount: integer("user_count").notNull(),
+  runId: uuid("run_id").references(() => conversationTurns.id, { onDelete: "set null" }),
+  status: text("status", { enum: ["running", "completed", "failed", "aborted"] }).notNull(),
+  responseText: text("response_text"), requiresApproval: boolean("requires_approval").notNull().default(false),
+  createdAt: createdAt(), finishedAt: timestamp("finished_at", { withTimezone: true }),
+}, (table) => [uniqueIndex("voice_turns_fingerprint_idx").on(table.voiceSessionId, table.fingerprint), index("voice_turns_run_idx").on(table.runId)]);

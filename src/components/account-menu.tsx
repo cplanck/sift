@@ -6,16 +6,17 @@ import { clearOfflineData } from "@/lib/offline";
 import { authClient } from "@/lib/auth-client";
 import { ThemeToggle } from "./providers";
 import { Button } from "./ui/button";
-import { useSiftSettings } from "./assistant-shell";
+import { useSiftSettings, useSiftVoice } from "./assistant-shell";
 export function AccountMenu({ name }: { name: string }) {
   const [error, setError] = useState("");
   const router = useRouter();
-  const openSettings = useSiftSettings();
+  const openSettings = useSiftSettings(), voice = useSiftVoice();
   return <div className="flex items-center gap-2"><ThemeToggle /><details className="relative">
     <summary aria-label="Your account" className="flex size-11 list-none items-center justify-center rounded-full border hover:bg-muted focus-visible:outline-2"><UserRound size={18} /></summary>
     <div className="absolute right-0 top-14 z-20 w-64 rounded-2xl border bg-background p-4 shadow-xl"><p className="mb-3 truncate text-sm">{name}</p>
       {openSettings && <Button variant="ghost" className="mb-2 w-full justify-start" onClick={openSettings}><Settings2 />Sift settings</Button>}
       <Button variant="outline" className="w-full" onClick={async () => { try {
+        if (voice?.busy) await voice.end();
         const result = await authClient.signOut();
         if (result.error) { setError("Couldn’t sign out. Try again."); return; }
         await clearOfflineData();

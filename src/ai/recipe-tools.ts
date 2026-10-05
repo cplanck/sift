@@ -15,7 +15,7 @@ import {
 } from "@/services/recipes";
 import type { Actor } from "@/services/workspaces";
 
-type Run = { conversationId: string; runId: string };
+type Run = { conversationId: string; runId: string; assertActive?: () => Promise<void> };
 const recipeIdSchema = z.object({ recipeId: z.uuid() });
 const expectedRecipeSchema = recipeIdSchema.extend({ expectedVersionId: z.uuid() });
 const sessionIdSchema = z.object({ sessionId: z.uuid() });
@@ -82,9 +82,15 @@ function artifactPage(artifact: ArtifactDetail, offset: number, limit: number) {
 }
 
 export function createRecipeTools(db: Database, actor: Actor, run: Run) {
-  const authorize = () => assertConversationRun(db, actor, run.conversationId, run.runId);
+  const authorize = async () => {
+    await assertConversationRun(db, actor, run.conversationId, run.runId);
+    await run.assertActive?.();
+  };
   function mutate<T extends object>(toolName: string, toolCallId: string, operation: (tx: Database) => Promise<T>) {
-    return safely(() => runToolMutation(db, actor, { ...run, toolName, toolCallId }, operation));
+    return safely(async () => {
+      await run.assertActive?.();
+      return runToolMutation(db, actor, { ...run, toolName, toolCallId }, operation);
+    });
   }
   return {
     searchRecipes: tool({

@@ -22,6 +22,8 @@ const envSchema = z.object({
   INNGEST_DEV: optional(z.enum(["0", "1"])),
   ELEVENLABS_API_KEY: optional(z.string().min(1)),
   ELEVENLABS_AGENT_ID: optional(z.string().min(1)),
+  ELEVENLABS_LLM_SECRET: optional(z.string().min(32)),
+  ELEVENLABS_WEBHOOK_SECRET: optional(z.string().min(32)),
 });
 
 export class ConfigurationError extends Error {

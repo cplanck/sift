@@ -79,7 +79,7 @@ test("an external app can sign up, request exact permissions, connect and be rev
   // A failed network request must not look like an approved connection.
   await context.setOffline(true);
   await page.getByRole("button", { name: "Allow access", exact: true }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.getByRole("main").getByRole("alert")).toBeVisible();
   await expect(page.getByRole("button", { name: "Allow access", exact: true })).toBeEnabled();
   await context.setOffline(false);
   expect(await (await page.request.get("/api/mcp-connections")).json()).toEqual([]);

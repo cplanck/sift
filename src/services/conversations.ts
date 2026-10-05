@@ -19,6 +19,8 @@ const modelSchema = z.object({
 const hasPendingApproval = (messages: UIMessage[]) => messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested"));
 const interrupted = "The previous reply was interrupted. Some changes may have been saved; review your saved changes before asking again.";
 
+export type StartedConversationTurn = { runId: string; messages: UIMessage[]; modelId: string | null };
+
 async function scopedConversation(db: Executor, actor: Actor, id: string) {
   await assertMembership(db, actor);
   if (!z.uuid().safeParse(id).success) throw new DomainError("NOT_FOUND", "Conversation not found.");
@@ -83,7 +85,7 @@ export async function deleteConversation(db: Database, actor: Actor, id: string)
   });
 }
 
-export async function beginConversationTurn(db: Database, actor: Actor, input: AssistantRequest) {
+export async function beginConversationTurn(db: Database, actor: Actor, input: AssistantRequest): Promise<StartedConversationTurn> {
   const data = assistantRequestSchema.parse(input);
   return db.transaction(async (tx) => {
     await assertMembership(tx, actor);
@@ -119,6 +121,21 @@ export async function beginConversationTurn(db: Database, actor: Actor, input: A
 export async function assertConversationRun(db: Executor, actor: Actor, conversationId: string, runId: string) {
   const row = await scopedConversation(db, actor, conversationId);
   if (row.activeRunId !== runId || !isBusy(row)) throw new DomainError("CONFLICT", "This reply is no longer active. Reload the conversation.");
+}
+
+// A voice disconnect/new utterance may cancel only the run its durable voice
+// turn owns. The row lock shares the mutation journal's boundary: a mutation
+// either committed before cancellation, or sees the fence and cannot execute.
+export async function abortConversationTurn(db: Database, actor: Actor, conversationId: string, expectedRunId: string): Promise<boolean> {
+  z.uuid().parse(expectedRunId);
+  return db.transaction(async (tx) => {
+    await scopedConversation(tx, actor, conversationId);
+    const [row] = await tx.select().from(conversations).where(scope(actor, conversationId)).for("update");
+    if (!row || row.activeRunId !== expectedRunId) return false;
+    await tx.update(conversationTurns).set({ status: "aborted", finishedAt: new Date() }).where(and(eq(conversationTurns.id, expectedRunId), eq(conversationTurns.conversationId, conversationId)));
+    await tx.update(conversations).set({ activeRunId: null, leaseExpiresAt: null, lastError: interrupted, updatedAt: new Date() }).where(scope(actor, conversationId));
+    return true;
+  });
 }
 export async function finishConversationTurn(db: Database, actor: Actor, conversationId: string, runId: string, messages: UIMessage[], outcome: "completed" | "failed" | "aborted", errorMessage?: string) {
   return db.transaction(async (tx) => {

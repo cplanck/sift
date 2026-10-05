@@ -1,10 +1,10 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { createAgentUIStreamResponse, isStepCount, isToolUIPart, ToolLoopAgent, type InferUITools, type LanguageModel, type UIDataTypes, type UIMessage } from "ai";
+import { createAgentUIStream, createUIMessageStreamResponse, isStepCount, isToolUIPart, ToolLoopAgent, type InferUITools, type LanguageModel, type UIDataTypes, type UIMessage } from "ai";
 import type { Database } from "@/db/connection";
 import { assistantRequestSchema } from "@/domain/assistant";
 import { DomainError } from "@/domain/errors";
-import { beginConversationTurn, finishConversationTurn, assertConversationRun, getConversation } from "@/services/conversations";
+import { beginConversationTurn, finishConversationTurn, assertConversationRun, getConversation, type StartedConversationTurn } from "@/services/conversations";
 import { resolveGatewayCredential } from "@/services/credentials";
 import { recordModelUsage } from "@/services/ai-usage";
 import { consumeLimit } from "@/services/rate-limit";
@@ -15,6 +15,7 @@ import { assistantInstructions, resolveAssistantContext } from "./context";
 import { prepareAssistantModel } from "./models";
 import { providerErrorMessage } from "./provider-errors";
 import { createRecipeTools, safeAssistantError, type RecipeTools } from "./recipe-tools";
+import { createVoiceStreamResponse, type VoiceStreamResult, type VoiceStreamOutcome } from "./voice-stream";
 
 export type SiftUIMessage = UIMessage<unknown, UIDataTypes, InferUITools<RecipeTools>>;
 const failedResponse = "Sift couldn’t finish that response. Reload the conversation and review your saved changes before trying again.";
@@ -42,29 +43,46 @@ function settledMessages(messages: UIMessage[], currentApprovalId?: string): UIM
   })).filter((message) => message.parts.some((part) => part.type !== "step-start"));
 }
 
-export async function assistantResponse(db: Database, actor: Actor, input: unknown, options: {
+export type AssistantRuntimeOptions = {
   /** Dependency injection for provider-boundary tests; never read from HTTP input. */
   model?: LanguageModel;
   /** Route handlers register this promise with Next's after lifecycle. */
   waitUntil?: (task: Promise<void>) => void;
-} = {}): Promise<Response> {
+  abortSignal?: AbortSignal;
+  /** Trusted server lifecycle hook; wraps the shared begin in a voice transaction. */
+  beginTurn?: (begin: (tx: Database) => Promise<StartedConversationTurn>) => Promise<StartedConversationTurn>;
+  /** Recheck a durable voice session/turn before each billed model call. */
+  assertActive?: (runId: string) => Promise<void>;
+};
+export type AssistantVoiceOptions = AssistantRuntimeOptions & {
+  onVoiceEnd?: (result: VoiceStreamResult & { runId: string; requestId: string }) => Promise<void>;
+};
+
+export function assistantResponse(db: Database, actor: Actor, input: unknown, options: AssistantRuntimeOptions = {}): Promise<Response> {
+  return runAssistantResponse(db, actor, input, options, "text");
+}
+export function assistantVoiceResponse(db: Database, actor: Actor, input: unknown, options: AssistantVoiceOptions = {}): Promise<Response> {
+  return runAssistantResponse(db, actor, input, options, "voice");
+}
+
+async function runAssistantResponse(db: Database, actor: Actor, input: unknown, options: AssistantVoiceOptions, transport: "text" | "voice"): Promise<Response> {
   const request = assistantRequestSchema.parse(input);
   const page = await resolveAssistantContext(db, actor, request.context);
   await getConversation(db, actor, request.conversationId);
   const userKey = await resolveGatewayCredential(db, actor.userId);
   const chooseModel = options.model ? undefined : prepareAssistantModel(userKey);
   await consumeLimit(db, actor, "assistant", 60);
-  const run = await beginConversationTurn(db, actor, request);
-  const model = options.model ?? chooseModel!(run.modelId);
-  const trustedMessages = settledMessages(run.messages, "approval" in request ? request.approval.id : undefined);
-  const tools = createRecipeTools(db, actor, { conversationId: request.conversationId, runId: run.runId });
+  options.abortSignal?.throwIfAborted();
+  const begin = (tx: Database) => beginConversationTurn(tx, actor, request);
+  const run = options.beginTurn ? await options.beginTurn(begin) : await begin(db);
   let approvalIssued = false;
   let settled = false;
   let settlement: Promise<void> | undefined;
-  let latestMessages = trustedMessages;
+  let latestMessages = run.messages;
   let errorMessage = failedResponse;
   let modelCallNumber = 0;
   let sawStreamError = false;
+  let finalOutcome: VoiceStreamOutcome = "failed";
 
   function observeError(error: unknown) {
     sawStreamError = true;
@@ -81,8 +99,15 @@ export async function assistantResponse(db: Database, actor: Actor, input: unkno
     finally { settlement = undefined; }
   }
 
-  const agent = new ToolLoopAgent({
-    model, instructions: assistantInstructions(page), tools,
+  try {
+    const model = options.model ?? chooseModel!(run.modelId);
+    const trustedMessages = settledMessages(run.messages, "approval" in request ? request.approval.id : undefined);
+    latestMessages = trustedMessages;
+    const tools = createRecipeTools(db, actor, { conversationId: request.conversationId, runId: run.runId,
+      ...(options.assertActive ? { assertActive: () => options.assertActive!(run.runId) } : {}),
+    });
+    const agent = new ToolLoopAgent({
+    model, instructions: [assistantInstructions(page), ...(transport === "voice" ? ["This reply is spoken through Sift voice. Use short, natural sentences and plain text. Do not read raw JSON, IDs, tool arguments, or Markdown formatting aloud. If native approval is needed, ask the user to use the on-screen confirmation; spoken agreement does not approve an action."] : [])].join("\n\n"), tools,
     stopWhen: isStepCount(8), maxOutputTokens: 6000, maxRetries: 0,
     allowSystemInMessages: false,
     // SDK 7 forwards prepared call options to streamText. Its default error
@@ -97,15 +122,20 @@ export async function assistantResponse(db: Database, actor: Actor, input: unkno
     onLanguageModelCallEnd: async ({ modelId, usage, providerMetadata }) => {
       await recordModelUsage(db, actor, { idempotencyKey: `${run.runId}:${modelCallNumber}`, conversationId: request.conversationId, runId: run.runId, model: modelId, credentialSource: userKey ? "user" : "app", usage, providerMetadata });
     },
-    prepareStep: ({ steps }) => ({
-      activeTools: page.recipe || steps.some((step) => step.toolResults.some((result) => (result.toolName === "getRecipe" || result.toolName === "createRecipe") && !!result.output && typeof result.output === "object" && "ok" in result.output && result.output.ok === true)) ? toolNames : discoveryTools,
-    }),
+    prepareStep: async ({ steps }) => {
+      // SDK telemetry hooks deliberately swallow callback exceptions. This
+      // awaited preparation hook enforces the fence before generation instead.
+      await assertConversationRun(db, actor, request.conversationId, run.runId);
+      await options.assertActive?.(run.runId);
+      return { activeTools: page.recipe || steps.some((step) => step.toolResults.some((result) => (result.toolName === "getRecipe" || result.toolName === "createRecipe") && !!result.output && typeof result.output === "object" && "ok" in result.output && result.output.ok === true)) ? toolNames : discoveryTools };
+    },
     toolApproval: {
       archiveRecipe: async ({ recipeId, expectedVersionId }) => {
         if (approvalIssued) return { type: "denied", reason: "Confirm the pending action before proposing another action that needs approval." };
         approvalIssued = true;
         try {
           await assertConversationRun(db, actor, request.conversationId, run.runId);
+          await options.assertActive?.(run.runId);
           const recipe = await getRecipe(db, actor, recipeId);
           if (recipe.version.id !== expectedVersionId) throw new DomainError("CONFLICT", "The recipe changed. Read its current version before proposing an archive.");
           if (recipe.status !== "active") throw new DomainError("INVALID_INPUT", "Only an approved, active recipe can be archived.");
@@ -117,6 +147,7 @@ export async function assistantResponse(db: Database, actor: Actor, input: unkno
         approvalIssued = true;
         try {
           await assertConversationRun(db, actor, request.conversationId, run.runId);
+          await options.assertActive?.(run.runId);
           const session = await getCookingSession(db, actor, sessionId);
           if (session.startedByUserId !== actor.userId) throw new DomainError("NOT_FOUND", "Cooking session not found.");
           if (session.revision !== expectedRevision) throw new DomainError("CONFLICT", "This cook changed. Read its saved progress before proposing to end it.");
@@ -127,16 +158,29 @@ export async function assistantResponse(db: Database, actor: Actor, input: unkno
     },
   });
 
-  try {
-    return await createAgentUIStreamResponse({
+    const stream = await createAgentUIStream({
       agent, uiMessages: trustedMessages, generateMessageId: randomUUID,
-      timeout: 60000, sendReasoning: false,
-      headers: { "Cache-Control": "private, no-store", "X-Conversation-Id": request.conversationId, "X-Assistant-Run-Id": run.runId },
+      timeout: 60000, sendReasoning: false, abortSignal: options.abortSignal,
       onError: observeError,
       onEnd: async ({ messages, outcome, isAborted }) => {
         latestMessages = messages;
-        await settle(messages, isAborted || outcome.status === "aborted" ? "aborted" : !sawStreamError && outcome.status === "completed" ? "completed" : "failed");
+        finalOutcome = isAborted || options.abortSignal?.aborted || outcome.status === "aborted" ? "aborted" : !sawStreamError && outcome.status === "completed" ? "completed" : "failed";
+        await settle(messages, finalOutcome);
       },
+    });
+    if (transport === "voice") return createVoiceStreamResponse({
+      stream, responseId: `chatcmpl-${run.runId}`, getOutcome: () => finalOutcome, getErrorMessage: () => errorMessage,
+      waitUntil: options.waitUntil,
+      onEnd: async (result) => {
+        // Normally the SDK already settled. A raw source-stream failure can
+        // bypass its onEnd, so the adapter also closes the shared run here.
+        try { await settle(latestMessages, result.outcome); }
+        finally { await options.onVoiceEnd?.({ ...result, runId: run.runId, requestId: request.requestId }); }
+      },
+    });
+    return createUIMessageStreamResponse({
+      stream,
+      headers: { "Cache-Control": "private, no-store", "X-Conversation-Id": request.conversationId, "X-Assistant-Run-Id": run.runId },
       consumeSseStream: ({ stream }) => {
         // Drain the SDK's own SSE stream independently of the browser. This is
         // lifecycle/persistence handling, not another agent or streaming loop.
@@ -149,7 +193,10 @@ export async function assistantResponse(db: Database, actor: Actor, input: unkno
     });
   } catch (error) {
     observeError(error);
-    await settle(latestMessages, "failed");
+    try { await settle(latestMessages, "failed"); }
+    finally {
+      if (transport === "voice") await options.onVoiceEnd?.({ runId: run.runId, requestId: request.requestId, text: errorMessage, outcome: "failed", requiresApproval: false });
+    }
     if (error instanceof DomainError) throw error;
     throw new DomainError("INVALID_INPUT", errorMessage);
   }

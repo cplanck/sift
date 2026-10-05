@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
-import { ArrowLeft, ArrowUp, History, LoaderCircle, MoreHorizontal, Pencil, Plus, RefreshCw, Settings2, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowUp, History, LoaderCircle, Mic, MoreHorizontal, Pencil, Plus, RefreshCw, Settings2, Trash2, X } from "lucide-react";
 import type { SiftUIMessage } from "@/ai/assistant-runtime";
 import type { ClientPageContext } from "@/domain/assistant";
 import { api } from "@/lib/client-http";
@@ -11,6 +11,8 @@ import type { Conversation, ConversationList } from "./assistant-shell";
 import { AssistantMessage } from "./assistant-message";
 import { AssistantDetails } from "./assistant-details";
 import { ModelSelector } from "./model-selector";
+import type { SiftVoice } from "./use-voice-session";
+import { VoiceControls } from "./voice-controls";
 import { ARTIFACT_CHANGED } from "./use-artifact";
 import { artifactPreviewSchema } from "./artifact-card";
 import { SiftMark } from "./brand";
@@ -23,13 +25,15 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 type Props = {
   open: boolean; onOpenChange: (value: boolean) => void; conversation: Conversation | null; history: ConversationList; loading: boolean; loadError: string; pageLabel: string; getPageContext: () => ClientPageContext;
   onSettings: () => void; onNew: () => Promise<void>; onLoad: (id: string) => Promise<void>; onHistory: () => Promise<ConversationList>; onConversationChanged: (conversation: Conversation | null) => void;
+  voice: SiftVoice; subscribeVoiceConversation: (listener: (saved: Conversation) => void) => () => void;
 };
 
-export function AssistantPanel({ open, onOpenChange, conversation, history, loading, loadError, pageLabel, getPageContext, onSettings, onNew, onLoad, onHistory, onConversationChanged }: Props) {
+export function AssistantPanel({ open, onOpenChange, conversation, history, loading, loadError, pageLabel, getPageContext, onSettings, onNew, onLoad, onHistory, onConversationChanged, voice, subscribeVoiceConversation }: Props) {
   const router = useRouter();
   const [input, setInput] = useState(""), [view, setView] = useState<"chat" | "history">("chat"), [action, setAction] = useState<"rename" | "delete" | null>(null), [actionError, setActionError] = useState(""), [actionBusy, setActionBusy] = useState(false), [savedError, setSavedError] = useState(conversation?.lastError ?? ""), [serverBusy, setServerBusy] = useState(conversation?.busy ?? false), [reloading, setReloading] = useState(false);
   const [clientError, setClientError] = useState("");
   const scrollArea = useRef<HTMLDivElement>(null), nearBottom = useRef(true), submitted = useRef<{ id: string; text: string } | null>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
   const renderedMutations = useRef(new Set((conversation?.messages ?? []).flatMap((message) => message.parts.filter(isToolUIPart).map((part) => part.toolCallId))));
   const transport = useMemo(() => new DefaultChatTransport<SiftUIMessage>({
     api: "/api/assistant",
@@ -55,7 +59,8 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
       if (conversation) void api<Conversation>(`/api/conversations/${conversation.id}`).then((saved) => { onConversationChanged(saved); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); }).catch(() => undefined);
     },
   });
-  const streaming = status === "submitted" || status === "streaming", busy = streaming || serverBusy || loading || actionBusy || reloading;
+  const streaming = status === "submitted" || status === "streaming", busy = streaming || serverBusy || loading || actionBusy || reloading || voice.busy;
+  const voiceVisible = voice.busy || !!voice.error || !!voice.notice;
   const pendingApproval = messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested" && !part.approval.isAutomatic));
   const liveArtifactReceipts = useMemo(() => {
     const latest = new Map<string, string>();
@@ -78,6 +83,10 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
     } catch (error) { setActionError(error instanceof Error ? error.message : "Couldn’t load the saved conversation."); }
     finally { setReloading(false); }
   }, [conversation, setMessages, clearError, router, onConversationChanged]);
+  useEffect(() => subscribeVoiceConversation((saved) => {
+    if (saved.id !== conversation?.id) return;
+    setMessages(saved.messages as SiftUIMessage[]); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); clearError(); setClientError("");
+  }), [subscribeVoiceConversation, conversation?.id, setMessages, clearError]);
   useEffect(() => {
     if (!serverBusy || streaming) return;
     const timer = setInterval(() => { void reloadSaved(); }, 2500);
@@ -102,11 +111,12 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
     await sendMessage({ id, role: "user", parts: [{ type: "text", text }] });
   }
   async function approve(id: string, approved: boolean) {
+    if (voice.busy) return;
     setSavedError(""); setClientError(""); setActionError(""); clearError();
     await addToolApprovalResponse({ id, approved, options: { body: { approval: { id, approved } } } });
   }
   return <Sheet open={open} onOpenChange={onOpenChange}>
-    <SheetTrigger asChild><Button aria-label="Open Sift" className="fixed bottom-[max(1.5rem,env(safe-area-inset-bottom))] right-5 z-40 h-12 gap-2 rounded-full border border-foreground/10 px-4 shadow-lg sm:right-8"><SiftMark className="size-5" /><span className="font-medium">sift</span>{streaming && <span aria-label="Reply in progress" className="size-1.5 rounded-full bg-background/70" />}</Button></SheetTrigger>
+    {!voiceVisible && <SheetTrigger asChild><Button aria-label="Open Sift" className="fixed bottom-[max(1.5rem,env(safe-area-inset-bottom))] right-5 z-40 h-12 gap-2 rounded-full border border-foreground/10 px-4 shadow-lg sm:right-8"><SiftMark className="size-5" /><span className="font-medium">sift</span>{streaming && <span aria-label="Reply in progress" className="size-1.5 rounded-full bg-background/70" />}</Button></SheetTrigger>}
     <SheetContent side="right" showCloseButton={false} className="h-dvh w-full gap-0 border-l bg-background p-0 sm:w-[420px] sm:max-w-[420px]">
       <SheetHeader className="gap-3 border-b px-5 pb-4 pt-[max(1rem,env(safe-area-inset-top))]"><div className="flex items-center justify-between gap-3"><SheetTitle className="flex items-center gap-2 text-xl tracking-tight"><SiftMark className="size-6" />sift</SheetTitle><div className="flex gap-0.5"><Button variant="ghost" size="icon" aria-label="Conversation history" disabled={busy} onClick={async () => { setView(view === "history" ? "chat" : "history"); setAction(null); try { await onHistory(); } catch { setActionError("Couldn’t load conversations. Try again."); } }}><History /></Button><Button variant="ghost" size="icon" aria-label="New conversation" disabled={busy} onClick={() => { setView("chat"); void onNew(); }}><Plus /></Button><SheetClose asChild><Button variant="ghost" size="icon" aria-label="Close Sift"><X /></Button></SheetClose></div></div><SheetDescription className="truncate text-xs">{view === "history" ? "Your conversations" : pageLabel}</SheetDescription></SheetHeader>
       {view === "history" ? <div className="min-h-0 flex-1 overflow-y-auto p-5"><Button variant="ghost" size="sm" className="mb-3" onClick={() => setView("chat")}><ArrowLeft />Back to conversation</Button>{history.length ? <ul className="space-y-2">{history.map((item) => <li key={item.id}><button disabled={loading} className="w-full rounded-xl border p-4 text-left hover:bg-muted disabled:opacity-50" onClick={() => { setView("chat"); void onLoad(item.id); }}><span className="block truncate text-sm font-medium">{item.title}</span><span className="mt-2 block text-xs text-muted-foreground">{new Date(item.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span></button></li>)}</ul> : <p className="py-8 text-sm text-muted-foreground">Your conversations will appear here.</p>}</div>
@@ -132,7 +142,10 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
           {conversation && <AssistantDetails conversation={conversation} showReceipts={!!(error || clientError || savedError)} onNavigate={() => onOpenChange(false)} />}
           {!conversation && !loading && loadError && <Button variant="outline" onClick={() => onOpenChange(true)}>Try again</Button>}
         </div>
-        <form className="border-t bg-background px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]" onSubmit={(event) => { event.preventDefault(); void submit(); }}>{conversation && <ModelSelector conversation={conversation} disabled={busy || pendingApproval} onBusy={setActionBusy} onChanged={(saved) => { setMessages(saved.messages as SiftUIMessage[]); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); onConversationChanged(saved); }} />}<div className="relative"><Textarea aria-label="Message Sift" disabled={loading || !conversation} value={input} onChange={(event) => setInput(event.target.value)} maxLength={8000} placeholder="Ask Sift…" className="max-h-44 min-h-24 resize-none rounded-2xl bg-muted/35 pb-12 pr-4 text-base sm:text-sm" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} /><Button type="submit" size="icon" aria-label="Send message" disabled={busy || pendingApproval || !input.trim() || !conversation} className="absolute bottom-2 right-2 size-9 rounded-xl">{streaming ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div><p className="mt-2 text-center text-[11px] leading-relaxed text-muted-foreground">{pendingApproval ? "Respond to the confirmation above to continue." : "Recipe changes are kept in version history."}</p></form>
+        <div className="border-t bg-background px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          {voiceVisible && <div className="mb-3"><VoiceControls voice={voice} onTranscript={() => setView("chat")} onText={() => { void voice.end().then(() => composer.current?.focus()); }} /></div>}
+          {!voice.busy && <form onSubmit={(event) => { event.preventDefault(); void submit(); }}><div className="mb-2 flex items-center justify-between gap-2">{conversation && <ModelSelector conversation={conversation} disabled={busy || pendingApproval} onBusy={setActionBusy} onChanged={(saved) => { setMessages(saved.messages as SiftUIMessage[]); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); onConversationChanged(saved); }} />}<Button type="button" variant="ghost" size="sm" disabled={busy || pendingApproval || !conversation} onClick={() => void voice.start()}><Mic />Talk to Sift</Button></div><div className="relative"><Textarea ref={composer} aria-label="Message Sift" disabled={loading || !conversation} value={input} onChange={(event) => setInput(event.target.value)} maxLength={8000} placeholder="Ask Sift…" className="max-h-44 min-h-24 resize-none rounded-2xl bg-muted/35 pb-12 pr-4 text-base sm:text-sm" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} /><Button type="submit" size="icon" aria-label="Send message" disabled={busy || pendingApproval || !input.trim() || !conversation} className="absolute bottom-2 right-2 size-9 rounded-xl">{streaming ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}</Button></div><p className="mt-2 text-center text-[11px] leading-relaxed text-muted-foreground">{pendingApproval ? "Respond to the confirmation above to continue." : "Recipe changes are kept in version history."}</p></form>}
+        </div>
       </>}
     </SheetContent>
   </Sheet>;

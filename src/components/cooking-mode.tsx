@@ -2,11 +2,11 @@
 import Link from "next/link";
 import { useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, Check, MessageCircle, Minus, Plus } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, MessageCircle, Mic, Minus, Plus } from "lucide-react";
 import type { CookingSessionDetail } from "@/domain/cooking";
 import { scaleIngredient } from "@/domain/scaling";
 import { api } from "@/lib/client-http";
-import { useAssistantPage, useOpenSift } from "./assistant-shell";
+import { useAssistantPage, useOpenSift, useSiftVoice } from "./assistant-shell";
 import { CookingWakeLock } from "./cooking-wake-lock";
 import { OfflineRecipeSnapshot } from "./offline-recipe";
 import { PhotoUpload } from "./photo-upload";
@@ -29,7 +29,7 @@ export function CookingMode({ initialSession, canEdit, coverPhotoId }: { initial
   const online = useSyncExternalStore(subscribeNetwork, networkSnapshot, serverNetworkSnapshot);
   const [localProgress, setLocalProgress] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [dialog, setDialog] = useState<"completed" | "abandoned" | null>(null);
-  const saving = useRef(false), router = useRouter(), openSift = useOpenSift();
+  const saving = useRef(false), router = useRouter(), openSift = useOpenSift(), voice = useSiftVoice();
   if (previous !== initialSession) { setPrevious(initialSession); setSavedSession(initialSession); setSession(initialSession); setLocalProgress(false); }
   const { content } = session.version, active = session.status === "active", editable = active && canEdit, progressEditable = editable && (!online || !localProgress);
   const steps = content.instructionSections.flatMap((section, sectionIndex) => section.steps.map((text, index) => ({ key: `${sectionIndex}:${index}`, section: section.name, text })));
@@ -61,10 +61,10 @@ export function CookingMode({ initialSession, canEdit, coverPhotoId }: { initial
     } catch (error) { setError(error instanceof Error ? error.message : "Couldn’t finish this cook."); await reload().catch(() => {}); }
     finally { saving.current = false; setBusy(false); }
   }
-  return <main id="main" className="page-width max-w-5xl py-6 pb-28 sm:py-10 sm:pb-28">
+  return <main id="main" className={`page-width max-w-5xl py-6 sm:py-10 ${voice?.busy || voice?.error || voice?.notice ? "pb-64 sm:pb-64" : "pb-28 sm:pb-28"}`}>
     <OfflineRecipeSnapshot snapshot={{ recipeId: session.recipeId, versionId: session.recipeVersionId, versionNumber: session.version.number, content, coverPhotoId, cooking: { id: session.id, status: savedSession.status, servings: savedSession.servings, ...savedSession.progress } }} />
     <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><Link href={`/recipes/${session.recipeId}`} className="inline-flex min-h-11 items-center gap-2 text-sm text-muted-foreground"><ArrowLeft size={16} />Back to recipe</Link>{active && <CookingWakeLock />}</div>
-    <div className="mb-8 flex flex-wrap items-start justify-between gap-5"><div><p className="mb-2 text-xs font-medium uppercase tracking-widest text-muted-foreground">{active ? "Cooking now" : session.status === "completed" ? "Cook completed" : "Cook ended early"} · Version {session.version.number}</p><h1 className="max-w-3xl text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">{content.title}</h1><p className="mt-3 text-sm text-muted-foreground">{new Date(session.startedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })} · {session.servings} servings{session.rating != null ? ` · ${session.rating}/5` : ""}</p></div>{openSift && <Button variant="outline" onClick={openSift}><MessageCircle />Ask Sift</Button>}</div>
+    <div className="mb-8 flex flex-wrap items-start justify-between gap-5"><div><p className="mb-2 text-xs font-medium uppercase tracking-widest text-muted-foreground">{active ? "Cooking now" : session.status === "completed" ? "Cook completed" : "Cook ended early"} · Version {session.version.number}</p><h1 className="max-w-3xl text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">{content.title}</h1><p className="mt-3 text-sm text-muted-foreground">{new Date(session.startedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })} · {session.servings} servings{session.rating != null ? ` · ${session.rating}/5` : ""}</p></div>{openSift && <div className="flex flex-wrap gap-2">{voice && active && <Button disabled={!online || localProgress || voice.busy} onClick={() => void voice.start()}><Mic />{voice.busy ? "Voice is on" : "Talk to Sift"}</Button>}<Button variant="outline" onClick={openSift}><MessageCircle />Ask Sift</Button></div>}</div>
     {!canEdit && active && <p className="mb-6 rounded-xl border p-4 text-sm text-muted-foreground">You’re viewing a cook started by someone else in this cookbook. Only its starter can change progress.</p>}
     {!active && <div className="mb-8 rounded-2xl border bg-muted/30 p-5"><p className="text-sm font-medium">{session.status === "completed" ? "Another one for the cookbook." : "Saved for your cooking history."}</p>{session.summary && <p className="mt-3 whitespace-pre-wrap leading-relaxed">{session.summary}</p>}<p className="mt-3 text-xs text-muted-foreground">This cook keeps the recipe exactly as it was when you started.</p></div>}
     {(!online || localProgress) && <div role="status" className="mb-5 space-y-3 rounded-xl border bg-muted/30 p-4 text-sm"><p>{!online ? "You’re offline. Checkoffs on this screen won’t save or sync. Notes, photos, and finishing need a connection." : "You’re back online. Your local checkoffs haven’t been saved. Reload your saved progress to continue."}</p>{online && localProgress && <Button variant="outline" disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await reload(); } catch { setError("Couldn’t reload saved progress. Check your connection and try again."); } finally { setBusy(false); } }}>Reload saved progress</Button>}</div>}
