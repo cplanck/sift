@@ -4,6 +4,7 @@ import { createAgentUIStream, createUIMessageStreamResponse, isStepCount, isTool
 import type { Database } from "@/db/connection";
 import { assistantRequestSchema } from "@/domain/assistant";
 import { DomainError } from "@/domain/errors";
+import type { RecipeContent } from "@/domain/recipe";
 import { beginConversationTurn, finishConversationTurn, assertConversationRun, getConversation, type StartedConversationTurn } from "@/services/conversations";
 import { resolveGatewayCredential } from "@/services/credentials";
 import { recordModelUsage } from "@/services/ai-usage";
@@ -118,7 +119,7 @@ async function runAssistantResponse(db: Database, actor: Actor, input: unknown, 
       ...(options.assertActive ? { assertActive: () => options.assertActive!(run.runId) } : {}),
     });
     const agent = new ToolLoopAgent({
-    model, instructions: [assistantInstructions(page), ...(transport === "voice" ? ["This reply is spoken through Sift voice. Use short, natural sentences and plain text. Do not read raw JSON, IDs, tool arguments, or Markdown formatting aloud. If native approval is needed, ask the user to use the on-screen confirmation; spoken agreement does not approve an action."] : [])].join("\n\n"), tools,
+    model, instructions: [assistantInstructions(page), ...(transport === "voice" ? ["This reply is spoken through Sift voice. Use short, natural sentences and plain text. Answer directly without 'one moment', 'just a moment', or repeated offers of further help. Do not read raw JSON, IDs, tool arguments, or Markdown formatting aloud. Speech can be misheard: naming a dish or discussing an idea is not permission to save it. New recipes require on-screen confirmation before saving. If native approval is needed, ask the user to use the on-screen confirmation; spoken agreement does not approve an action."] : [])].join("\n\n"), tools,
     stopWhen: isStepCount(8), maxOutputTokens: 6000, maxRetries: 0,
     allowSystemInMessages: false,
     // SDK 7 forwards prepared call options to streamText. Its default error
@@ -141,6 +142,17 @@ async function runAssistantResponse(db: Database, actor: Actor, input: unknown, 
       return { activeTools: page.recipe || steps.some((step) => step.toolResults.some((result) => (result.toolName === "getRecipe" || result.toolName === "createRecipe") && !!result.output && typeof result.output === "object" && "ok" in result.output && result.output.ok === true)) ? toolNames : discoveryTools };
     },
     toolApproval: {
+      ...(transport === "voice" ? {
+        createRecipe: async ({ content }: { content: RecipeContent }) => {
+          if (approvalIssued) return { type: "denied" as const, reason: "Confirm the pending action before proposing another recipe." };
+          approvalIssued = true;
+          try {
+            await assertConversationRun(db, actor, request.conversationId, run.runId);
+            await options.assertActive?.(run.runId);
+            return { type: "user-approval" as const, reason: `Save “${content.title}” to your cookbook?` };
+          } catch (error) { return { type: "denied" as const, reason: safeAssistantError(error).error }; }
+        },
+      } : {}),
       archiveRecipe: async ({ recipeId, expectedVersionId }) => {
         if (approvalIssued) return { type: "denied", reason: "Confirm the pending action before proposing another action that needs approval." };
         approvalIssued = true;

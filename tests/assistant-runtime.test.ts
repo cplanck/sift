@@ -277,6 +277,11 @@ describe("AssistantRuntime with real SDK loop, domain services, and PostgreSQL",
     await expect(resolveAssistantContext(db, actorA, { route: "/library", activeRecipeId: recipe.id })).rejects.toMatchObject({ code: "INVALID_INPUT" });
     await updateRecipe(db, actorA, recipe.id, { content: { ...recipe.version.content, title: "New title" }, expectedVersionId: recipe.version.id, changeSummary: "Concurrent rename" });
     await expect(resolveAssistantContext(db, actorA, { route: `/recipes/${recipe.id}`, activeRecipeVersionId: recipe.version.id })).rejects.toMatchObject({ code: "CONFLICT" });
+    const added = await createRecipe(db, actorA, { content: { ...content, title: "Freshly added three-bean chili" }, status: "active" });
+    const refreshed = await resolveAssistantContext(db, actorA, { route: "/library" });
+    expect(refreshed.cookbookDirectory.total).toBe(resolved.cookbookDirectory.total + 1);
+    expect(refreshed.cookbookDirectory.statusCounts.active).toBe(resolved.cookbookDirectory.statusCounts.active + 1);
+    expect(refreshed.cookbookDirectory.recipes).toContainEqual({ recipeId: added.id, title: "Freshly added three-bean chili", status: "active" });
   });
 
   it("starts a cook only as an explicit tool action and journals duplicate starts once", async () => {

@@ -9,7 +9,7 @@ import { DomainError } from "@/domain/errors";
 import { assistantResponse, assistantVoiceResponse, type AssistantVoiceOptions } from "@/ai/assistant-runtime";
 import { createVoiceStreamResponse, type VoiceStreamResult } from "@/ai/voice-stream";
 import { abortConversationTurn, beginConversationTurn, createConversation, finishConversationTurn, getConversation, runToolMutation } from "@/services/conversations";
-import { addRecipeNote, createRecipe, getRecipe, listRecipeNotes, listVersions } from "@/services/recipes";
+import { addRecipeNote, createRecipe, getRecipe, listRecipeNotes, listRecipes, listVersions } from "@/services/recipes";
 import { ensurePersonalWorkspace, type Actor } from "@/services/workspaces";
 import { testDatabaseUrl } from "./database";
 
@@ -154,6 +154,25 @@ describe("Voice transport over the shared native assistant runtime", () => {
     await expect(assistantVoiceResponse(db, actorA, message(conversation.id, "Yes", recipe), { model: modelWith(textReply("Must not approve")) })).rejects.toMatchObject({ code: "CONFLICT" });
     await (await assistantResponse(db, actorA, { conversationId: conversation.id, requestId: randomUUID(), context: { route: "/library" }, approval: { id: pending.approval.id, approved: true } }, { model: modelWith(textReply("Archived.")) })).text();
     expect((await getRecipe(db, actorA, recipe.id)).status).toBe("archived");
+  });
+
+  it("does not save a voice-proposed recipe until its exact native proposal is approved", async () => {
+    const conversation = await createConversation(db, actorA);
+    const proposed = { ...content, title: `Unrequested voice burrito ${randomUUID()}` };
+    const raw = await (await assistantVoiceResponse(db, actorA, message(conversation.id, "Vegan chocolate burrito."), {
+      model: modelWith(toolCall("createRecipe", { content: proposed })),
+    })).text();
+    expect(spoken(raw)).toContain("confirmation in Sift");
+    expect(await listRecipes(db, actorA, proposed.title)).toHaveLength(0);
+    const saved = await getConversation(db, actorA, conversation.id);
+    expect(saved.receipts).toHaveLength(0);
+    const pending = saved.messages.flatMap((entry) => entry.parts).find((part) => isToolUIPart(part) && part.state === "approval-requested");
+    if (!pending || !isToolUIPart(pending) || pending.state !== "approval-requested") throw new Error("Expected recipe save approval");
+    expect(pending.approval.requestReason).toContain(proposed.title);
+    await expect(assistantVoiceResponse(db, actorA, message(conversation.id, "Yes"), { model: modelWith(textReply("Must not run")) })).rejects.toMatchObject({ code: "CONFLICT" });
+    await (await assistantResponse(db, actorA, { conversationId: conversation.id, requestId: randomUUID(), context: { route: "/library" }, approval: { id: pending.approval.id, approved: true } }, { model: modelWith(textReply("Saved.")) })).text();
+    expect(await listRecipes(db, actorA, proposed.title)).toHaveLength(1);
+    expect((await getConversation(db, actorA, conversation.id)).receipts).toEqual([expect.objectContaining({ toolName: "createRecipe" })]);
   });
 
   it("lets a trusted voice lifecycle reserve the common turn atomically and roll it back", async () => {
