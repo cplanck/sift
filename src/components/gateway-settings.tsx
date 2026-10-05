@@ -7,6 +7,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { AiUsageDetails, type UsageSummary } from "./ai-usage-details";
+import { ConnectedApps } from "./connected-apps";
 
 type CredentialStatus = Awaited<ReturnType<typeof getGatewayCredentialStatus>>;
 export function GatewaySettings({ open, onOpenChange }: { open: boolean; onOpenChange: (value: boolean) => void }) {
@@ -19,7 +20,7 @@ export function GatewaySettings({ open, onOpenChange }: { open: boolean; onOpenC
     api<UsageSummary>("/api/usage", { signal: controller.signal }).then((result) => { setUsage(result); setUsageError(""); }).catch(() => { if (!controller.signal.aborted) setUsageError("Couldn’t load your recorded usage."); });
     return () => controller.abort();
   }, [open, attempt]);
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-h-[90dvh] overflow-y-auto"><DialogHeader><DialogTitle>Sift settings</DialogTitle><DialogDescription>Choose how Sift connects to its assistant.</DialogDescription></DialogHeader>
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-h-[90dvh] overflow-y-auto"><DialogHeader><DialogTitle>Sift settings</DialogTitle><DialogDescription>Manage your assistant connection and connected apps.</DialogDescription></DialogHeader>
     {!status ? <div className="py-6">{error ? <><p role="alert" className="text-sm text-destructive">{error}</p><Button className="mt-4" variant="outline" onClick={() => setAttempt((value) => value + 1)}>Try again</Button></> : <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Loading your settings…</p>}</div> : <>
       <section className="rounded-xl border bg-muted/30 p-4"><h3 className="flex items-center gap-2 text-sm font-medium"><KeyRound className="size-4" />Assistant connection</h3><p className="mt-3 text-sm leading-relaxed text-muted-foreground">{status.configured ? `Your personal Gateway key is saved (${status.hint}). Sift uses it before the app’s connection.` : status.appConfigured ? "The app has a Gateway key configured. You can use it or add a personal key." : "Sift needs a Vercel AI Gateway key before it can answer. Add your own below, or ask the app owner to configure the app’s connection."}</p></section>
       {status.encryptionConfigured ? <form className="space-y-4" onSubmit={async (event) => {
@@ -37,5 +38,6 @@ export function GatewaySettings({ open, onOpenChange }: { open: boolean; onOpenC
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <section className="border-t pt-3">{usage ? <AiUsageDetails usage={usage} title="Recorded AI usage" cookbook /> : <p className="text-xs text-muted-foreground">{usageError || "Loading recorded usage…"}</p>}{usageError && <Button variant="ghost" size="sm" className="mt-2" onClick={() => setAttempt((value) => value + 1)}>Reload usage</Button>}</section>
     </>}
+    <ConnectedApps open={open} />
   </DialogContent></Dialog>;
 }

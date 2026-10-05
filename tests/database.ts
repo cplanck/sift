@@ -3,6 +3,9 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { connectDatabase } from "../src/db/connection";
 
 export const testDatabaseUrl = process.env.TEST_DATABASE_URL ?? "postgresql://sift:sift-local-only@localhost:55432/sift_test";
+// Both test runners share this database, including encrypted OAuth signing keys.
+// Every Better Auth test instance must therefore use the same test-only secret.
+export const testAuthSecret = "sift-local-e2e-secret-do-not-use-in-production-42";
 export async function prepareTestDatabase() {
   const url = new URL(testDatabaseUrl);
   if (!url.pathname.endsWith("_test")) throw new Error("TEST_DATABASE_URL must point to a dedicated database ending in _test.");

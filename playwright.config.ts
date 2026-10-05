@@ -1,5 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
-import { testDatabaseUrl } from "./tests/database";
+import { testAuthSecret, testDatabaseUrl } from "./tests/database";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -21,7 +21,7 @@ export default defineConfig({
     timeout: 60000,
     env: {
       DATABASE_URL: testDatabaseUrl,
-      BETTER_AUTH_SECRET: "sift-local-e2e-secret-do-not-use-in-production-42",
+      BETTER_AUTH_SECRET: testAuthSecret,
       BETTER_AUTH_URL: "http://localhost:3100",
       R2_ACCOUNT_ID: "",
       R2_ACCESS_KEY_ID: "",

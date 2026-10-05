@@ -46,6 +46,24 @@ export async function createImport(db: Database, actor: Actor, input: unknown) {
   return getImport(db, actor, record.id);
 }
 
+// Structured external ingestion uses the same draft/review workflow. The
+// caller supplies a namespaced request UUID and its original payload so a
+// delivery retry cannot create a duplicate or replace a different request.
+export async function createStructuredImport(db: Database, actor: Actor, input: { id: string; rawText: string; content: RecipeContent; source: RecipeSource }) {
+  z.uuid().parse(input.id);
+  z.string().max(80000).parse(input.rawText);
+  return db.transaction(async (tx) => {
+    await assertMembership(tx, actor);
+    const inserted = await tx.insert(recipeImports).values({ id: input.id, workspaceId: actor.workspaceId, createdByUserId: actor.userId, kind: "mcp", rawText: input.rawText, sourceUrl: input.source.url ?? null }).onConflictDoNothing().returning({ id: recipeImports.id });
+    const [record] = await tx.select().from(recipeImports).where(and(eq(recipeImports.id, input.id), eq(recipeImports.workspaceId, actor.workspaceId), eq(recipeImports.createdByUserId, actor.userId))).for("update");
+    if (!record) throw new DomainError("NOT_FOUND", "Import not found.");
+    if (record.kind !== "mcp" || record.rawText !== input.rawText) throw new DomainError("CONFLICT", "This save request was already used for different content. Use a new requestId for a new recipe.");
+    if (inserted.length) await consumeLimit(tx, actor, "import", 30);
+    await saveExtractedImport(tx, actor, record.id, input.content, input.source);
+    return getImport(tx, actor, record.id);
+  });
+}
+
 export async function saveExtractedImport(db: Database, actor: Actor, id: string, content: RecipeContent, source: RecipeSource) {
   return db.transaction(async (tx) => {
     await assertMembership(tx, actor);

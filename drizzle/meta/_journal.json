@@ -57,6 +57,13 @@
       "when": 1791227150757,
       "tag": "0007_exotic_whiplash",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791229023876,
+      "tag": "0008_absent_storm",
+      "breakpoints": true
     }
   ]
 }
