@@ -8,6 +8,7 @@ import { api } from "@/lib/client-http";
 import type { Conversation } from "./assistant-shell";
 import { microphoneConstraints, microphoneError, stopMicrophoneTest, useMicrophonePreference } from "./use-microphone";
 import { voiceConversationError } from "./voice-conversation-state";
+import { classifyVoiceError } from "./voice-errors";
 
 export type VoicePhase = "idle" | "checking" | "permission" | "connecting" | "updating" | "listening" | "thinking" | "speaking" | "muted" | "ending" | "error";
 type Options = {
@@ -105,6 +106,12 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
     return task;
   }, [getPageContext, setMuted, refreshSaved, end]);
 
+  const reportSdkError = (context: unknown, source: "sdk-error" | "sdk-disconnect") => {
+    const failure = classifyVoiceError(context);
+    console.warn(JSON.stringify({ event: "voice.client_error", source, stage, selectedInput: !!deviceId, ...failure.diagnostic }));
+    void end(failure.message);
+  };
+
   useConversation({
     onConnect: ({ conversationId }) => {
       if (!wanted.current) { endSession(); return; }
@@ -113,9 +120,10 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
     },
     onDisconnect: (details) => {
       if (!wanted.current) return;
-      void end(details.reason === "error" ? "Voice disconnected. Check your connection, then reconnect or continue with text." : "");
+      if (details.reason === "error") reportSdkError(details, "sdk-disconnect");
+      else void end();
     },
-    onError: () => { if (wanted.current) void end("Voice couldn’t connect. Check your microphone and connection, then try again or continue with text."); },
+    onError: (_message, context) => { if (wanted.current) reportSdkError(context, "sdk-error"); },
     onMessage: ({ role, message }) => {
       if (!wanted.current) return;
       setCaption({ speaker: role === "user" ? "You" : "Sift", text: message.slice(0, 2000) });

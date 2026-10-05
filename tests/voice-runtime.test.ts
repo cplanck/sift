@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { inArray } from "drizzle-orm";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq, inArray } from "drizzle-orm";
 import { APICallError, isToolUIPart, simulateReadableStream } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { connectDatabase } from "@/db/connection";
-import { recipes, users } from "@/db/schema";
+import { conversationTurns, recipes, usageLimits, users } from "@/db/schema";
 import { DomainError } from "@/domain/errors";
 import { assistantResponse, assistantVoiceResponse, type AssistantVoiceOptions } from "@/ai/assistant-runtime";
 import { createVoiceStreamResponse, type VoiceStreamResult } from "@/ai/voice-stream";
@@ -25,6 +25,13 @@ const { db, pool } = connectDatabase(testDatabaseUrl);
 const userIds = [randomUUID(), randomUUID()];
 let actorA: Actor, actorB: Actor;
 const content = { title: "Voice test stew", servings: 4, ingredientSections: [{ name: "Stew", items: [{ text: "2 cups broth" }] }], instructionSections: [{ name: "", steps: ["Simmer gently."] }] };
+async function assistantQuota(actor: Actor, count?: number) {
+  const window = Math.floor(Date.now() / 3600_000), key = `${actor.userId}:assistant:${window}`;
+  if (count !== undefined) await db.insert(usageLimits).values({ key, userId: actor.userId, count, expiresAt: new Date((window + 1) * 3600_000) })
+    .onConflictDoUpdate({ target: usageLimits.key, set: { count } });
+  const [limit] = await db.select().from(usageLimits).where(eq(usageLimits.key, key));
+  return limit?.count ?? 0;
+}
 function message(conversationId: string, text: string, recipe?: { id: string; version: { id: string } }) {
   return { conversationId, requestId: randomUUID(), context: recipe ? { route: `/recipes/${recipe.id}`, activeRecipeId: recipe.id, activeRecipeVersionId: recipe.version.id } : { route: "/library" }, message: { id: randomUUID(), text } };
 }
@@ -35,6 +42,7 @@ beforeAll(async () => {
   await db.insert(users).values(userIds.map((id) => ({ id, email: `${id}@example.test`, name: "Voice runtime test cook" })));
   [actorA, actorB] = await Promise.all(userIds.map(async (userId) => ({ userId, workspaceId: await ensurePersonalWorkspace(db, userId) })));
 });
+beforeEach(async () => { await db.delete(usageLimits).where(inArray(usageLimits.userId, userIds)); });
 afterAll(async () => {
   await db.update(recipes).set({ currentVersionId: null }).where(inArray(recipes.workspaceId, [actorA.workspaceId, actorB.workspaceId]));
   await db.delete(users).where(inArray(users.id, userIds));
@@ -42,6 +50,38 @@ afterAll(async () => {
 });
 
 describe("Voice transport over the shared native assistant runtime", () => {
+  it("charges accepted text turns without charging duplicate requests or busy-conversation conflicts", async () => {
+    const conversation = await createConversation(db, actorA), input = message(conversation.id, "An accepted text request.");
+    await (await assistantResponse(db, actorA, input, { model: modelWith(textReply("The accepted answer.")) })).text();
+    expect(await assistantQuota(actorA)).toBe(1);
+    await assistantQuota(actorA, 59);
+    const unused = modelWith(textReply("Must not run"));
+    const before = await getConversation(db, actorA, conversation.id);
+    for (let retry = 0; retry < 3; retry++) await expect(assistantResponse(db, actorA, input, { model: unused })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await getConversation(db, actorA, conversation.id)).toEqual(before);
+    const busy = await beginConversationTurn(db, actorA, message(conversation.id, "Another already reserved request."));
+    const whileBusy = await getConversation(db, actorA, conversation.id);
+    await expect(assistantResponse(db, actorA, message(conversation.id, "Must not append while busy."), { model: unused })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await getConversation(db, actorA, conversation.id)).toEqual(whileBusy);
+    expect(await assistantQuota(actorA)).toBe(59);
+    expect(unused.doStreamCalls).toHaveLength(0);
+    await finishConversationTurn(db, actorA, conversation.id, busy.runId, busy.messages, "completed");
+    await (await assistantResponse(db, actorA, message(conversation.id, "The last available request."), { model: modelWith(textReply("The allowance remained available.")) })).text();
+    expect(await assistantQuota(actorA)).toBe(60);
+    expect(await getConversation(db, actorA, conversation.id)).toMatchObject({ busy: false, usage: { calls: 2 } });
+  });
+
+  it("rolls back text turn admission when the shared allowance is exhausted", async () => {
+    const conversation = await createConversation(db, actorA), input = message(conversation.id, "Must not persist over quota.");
+    await assistantQuota(actorA, 60);
+    const before = await getConversation(db, actorA, conversation.id), model = modelWith(textReply("Must not run"));
+    for (let retry = 0; retry < 2; retry++) await expect(assistantResponse(db, actorA, input, { model })).rejects.toMatchObject({ code: "RATE_LIMITED" });
+    expect(await assistantQuota(actorA)).toBe(60);
+    expect(await db.select().from(conversationTurns).where(eq(conversationTurns.conversationId, conversation.id))).toHaveLength(0);
+    expect(await getConversation(db, actorA, conversation.id)).toEqual(before);
+    expect(model.doStreamCalls).toHaveLength(0);
+  });
+
   it("settles a reserved voice turn if native stream initialization fails", async () => {
     const conversation = await createConversation(db, actorA), input = message(conversation.id, "Initialize voice.");
     const model = modelWith(textReply("Must not run")), completed: VoiceEnd[] = [];
@@ -122,9 +162,14 @@ describe("Voice transport over the shared native assistant runtime", () => {
     await expect(assistantVoiceResponse(db, actorA, input, { model, beginTurn: (begin) => db.transaction(async (tx) => {
       const started = await begin(tx);
       expect(started.modelId).toBeNull();
+      const [admitted] = await tx.select().from(usageLimits).where(eq(usageLimits.userId, actorA.userId));
+      expect(admitted.count).toBe(1);
       throw new DomainError("CONFLICT", "The voice session ended while this turn was starting.");
     }) })).rejects.toMatchObject({ code: "CONFLICT" });
     expect((await getConversation(db, actorA, conversation.id)).messages).toEqual([]);
+    expect(await assistantQuota(actorA)).toBe(0);
+    expect(await db.select().from(usageLimits).where(eq(usageLimits.userId, actorA.userId))).toHaveLength(0);
+    expect(await db.select().from(conversationTurns).where(eq(conversationTurns.conversationId, conversation.id))).toHaveLength(0);
     expect(model.doStreamCalls).toHaveLength(0);
     const guards: string[] = [];
     let runId: string | undefined;
@@ -132,6 +177,7 @@ describe("Voice transport over the shared native assistant runtime", () => {
       const started = await begin(tx); runId = started.runId; return started;
     }), assertActive: async (id) => { guards.push(id); } })).text();
     expect(guards).toEqual([runId]);
+    expect(await assistantQuota(actorA)).toBe(1);
   });
 
   it("fences only an expected voice-owned run and preserves committed actions across a later turn", async () => {

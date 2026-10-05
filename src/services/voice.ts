@@ -14,7 +14,7 @@ import { prepareAssistantModel } from "@/ai/models";
 import { createVoiceStreamResponse } from "@/ai/voice-stream";
 import { createElevenVoiceToken } from "@/voice/elevenlabs";
 import { abortConversationTurn, getConversation, recordConversationNotice } from "./conversations";
-import { consumeLimit } from "./rate-limit";
+import { assertLimitAvailable, consumeLimit } from "./rate-limit";
 import { resolveGatewayCredential } from "./credentials";
 import { assertMembership, type Actor } from "./workspaces";
 
@@ -67,6 +67,7 @@ export async function startVoiceSession(db: Database, actor: Actor, authSessionI
   // Speech must not start a billable provider session if the shared assistant
   // cannot answer. This resolves configuration only; it makes no model call.
   prepareAssistantModel(await resolveGatewayCredential(db, actor.userId));
+  await assertLimitAvailable(db, actor, "assistant", 60);
   await consumeLimit(db, actor, "voice", 20);
   const expiresAt = new Date(Math.min(session.expiresAt.getTime(), Date.now() + voiceSessionMinutes * 60_000));
   const row = await db.transaction(async (tx) => {
@@ -254,6 +255,16 @@ export async function respondToVoice(db: Database, providerConversationId: strin
         if (stillActive) await tx.update(voiceSessions).set({ activeRunId: null, updatedAt: new Date() }).where(eq(voiceSessions.id, row.id));
       });
     },
+  }).catch(async (error: unknown) => {
+    if (!(error instanceof DomainError) || error.code !== "RATE_LIMITED") throw error;
+    // Admission rolled back without changing the transcript or interrupting an
+    // existing run. Explain the safe, actionable limit through speech/captions
+    // instead of making ElevenLabs retry a 429 and disconnect the microphone.
+    // No model call or new durable assistant turn is created for this notice.
+    const [current] = await db.select().from(voiceSessions).where(eq(voiceSessions.id, row.id));
+    if (!current) throw new DomainError("UNAUTHENTICATED", endedMessage);
+    await assertLive(db, current);
+    return replayResponse(error.message, requestId);
   });
 }
 

@@ -4,7 +4,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { isToolUIPart, simulateReadableStream } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { connectDatabase } from "@/db/connection";
-import { recipes, sessions, usageLimits, users, voiceSessions, voiceTurns } from "@/db/schema";
+import { conversationTurns, recipes, sessions, usageLimits, users, voiceSessions, voiceTurns } from "@/db/schema";
 import { assistantResponse } from "@/ai/assistant-runtime";
 import { voiceConversationError } from "@/components/voice-conversation-state";
 import { getUsageSummary } from "@/services/ai-usage";
@@ -26,6 +26,13 @@ const { db, pool } = connectDatabase(testDatabaseUrl);
 const userIds = [randomUUID(), randomUUID()];
 let actorA: Actor, actorB: Actor;
 const content = { title: "Voice session recipe", servings: 2, ingredientSections: [{ name: "", items: [{ text: "2 cups broth" }] }], instructionSections: [{ name: "", steps: ["Simmer."] }] };
+async function assistantQuota(actor: Actor, count?: number) {
+  const window = Math.floor(Date.now() / 3600_000), key = `${actor.userId}:assistant:${window}`;
+  if (count !== undefined) await db.insert(usageLimits).values({ key, userId: actor.userId, count, expiresAt: new Date((window + 1) * 3600_000) })
+    .onConflictDoUpdate({ target: usageLimits.key, set: { count } });
+  const [limit] = await db.select().from(usageLimits).where(eq(usageLimits.key, key));
+  return limit?.count ?? 0;
+}
 async function authSession(actor: Actor) {
   const [session] = await db.insert(sessions).values({ userId: actor.userId, token: randomUUID(), expiresAt: new Date(Date.now() + 3600_000) }).returning();
   return session;
@@ -71,6 +78,83 @@ describe("Durable authenticated voice sessions with PostgreSQL", () => {
       expect(issueToken).not.toHaveBeenCalled();
       expect(await db.select().from(voiceSessions).where(eq(voiceSessions.conversationId, conversation.id))).toHaveLength(0);
     } finally { vi.stubEnv("AI_GATEWAY_API_KEY", "unused-test-provider-boundary-key"); }
+  });
+
+  it("rejects an exhausted assistant allowance before issuing a speech token or consuming a voice start", async () => {
+    const session = await authSession(actorA), conversation = await createConversation(db, actorA);
+    await assistantQuota(actorA, 60);
+    const before = await db.select().from(usageLimits).where(eq(usageLimits.userId, actorA.userId));
+    const issueToken = vi.fn(async () => ({ conversationToken: "must-not-be-issued", providerConversationId: "conv_quota_must_not_be_issued", agentId: "agent_test" }));
+    await expect(startVoiceSession(db, actorA, session.id, { conversationId: conversation.id, context: { route: "/library" } }, { issueToken })).rejects.toMatchObject({
+      code: "RATE_LIMITED", message: expect.stringContaining("hourly assistant limit"),
+    });
+    expect(issueToken).not.toHaveBeenCalled();
+    expect(await db.select().from(usageLimits).where(eq(usageLimits.userId, actorA.userId))).toEqual(before);
+    expect(await db.select().from(voiceSessions).where(eq(voiceSessions.conversationId, conversation.id))).toHaveLength(0);
+    expect(await db.select().from(conversationTurns).where(eq(conversationTurns.conversationId, conversation.id))).toHaveLength(0);
+    expect(await getConversation(db, actorA, conversation.id)).toMatchObject({ messages: [], busy: false, usage: { calls: 0 } });
+  });
+
+  it("keeps the allowance available after more than sixty stale callbacks and provider retries", async () => {
+    const { connected, conversation } = await start();
+    const first = modelWith(text("The first answer.")), unused = modelWith(text("Must not run"));
+    await (await respondToVoice(db, connected.providerConversationId!, "2", body("Earlier speech", "Current request"), { model: first })).text();
+    expect(await assistantQuota(actorA)).toBe(1);
+    for (let attempt = 0; attempt < 64; attempt++) {
+      // Both invalid histories reach admission validation; a completed replay
+      // alone would not expose the old pre-validation quota charge.
+      const rejected = attempt % 2 === 0 ? body(`Forged earlier speech ${attempt}`, "Revised request") : body("Earlier speech", "Current request", `Out of order ${attempt}`);
+      await expect(respondToVoice(db, connected.providerConversationId!, attempt % 2 === 0 ? "2" : "1", rejected, { model: unused })).rejects.toMatchObject({ code: "CONFLICT" });
+      if (attempt % 8 === 0) expect(await (await respondToVoice(db, connected.providerConversationId!, "2", body("Earlier speech", "Current request"), { model: unused })).text()).toContain("The first answer.");
+    }
+    expect(await assistantQuota(actorA)).toBe(1);
+    expect(unused.doStreamCalls).toHaveLength(0);
+    expect(await db.select().from(voiceTurns).where(eq(voiceTurns.voiceSessionId, connected.id))).toHaveLength(1);
+    const revised = modelWith(text("The full answer."));
+    await (await respondToVoice(db, connected.providerConversationId!, "2", body("Earlier speech", "Current request with a clarification"), { model: revised })).text();
+    expect(await assistantQuota(actorA)).toBe(2);
+    expect(revised.doStreamCalls).toHaveLength(1);
+    expect(await (await respondToVoice(db, connected.providerConversationId!, "2", body("Earlier speech", "Current request with a clarification"), { model: unused })).text()).toContain("The full answer.");
+    expect(await assistantQuota(actorA)).toBe(2);
+    await (await respondToVoice(db, connected.providerConversationId!, "3", body("Earlier speech", "Current request with a clarification", "A valid follow-up"), { model: modelWith(text("The next answer.")) })).text();
+    expect(await assistantQuota(actorA)).toBe(3);
+    expect(await getConversation(db, actorA, conversation.id)).toMatchObject({ busy: false, usage: { calls: 3 } });
+  });
+
+  it.each([false, true])("speaks a mid-session quota error without reserving a turn or interrupting an existing reply (active: %s)", async (active) => {
+    const { connected, conversation } = await start(), held = heldModel(text("The admitted answer still completes."));
+    const original = active ? await respondToVoice(db, connected.providerConversationId!, "0", body("An admitted request"), { model: held.model }) : undefined;
+    if (active) await held.started;
+    await assistantQuota(actorA, 60);
+    const [beforeSession] = await db.select().from(voiceSessions).where(eq(voiceSessions.id, connected.id));
+    const beforeConversation = await getConversation(db, actorA, conversation.id);
+    const beforeVoiceTurns = await db.select().from(voiceTurns).where(eq(voiceTurns.voiceSessionId, connected.id));
+    const beforeTurns = await db.select().from(conversationTurns).where(eq(conversationTurns.conversationId, conversation.id));
+    const unused = modelWith(text("Must not run"));
+    try {
+      for (let retry = 0; retry < 2; retry++) {
+        const response = await respondToVoice(db, connected.providerConversationId!, active ? "1" : "0", active ? body("An admitted request", "An over-limit request") : body("An over-limit request"), { model: unused });
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("text/event-stream");
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        const raw = await response.text();
+        const speech = raw.split("\n").filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+          .flatMap((line) => JSON.parse(line.slice(6)).choices.map((choice: { delta: { content?: string } }) => choice.delta.content ?? "")).join("");
+        expect(raw).toContain("data: [DONE]");
+        expect(speech).toContain("hourly assistant limit");
+        expect(speech).toMatch(/Try again in \d+ minutes? \(\d{2}:\d{2} UTC\)/);
+      }
+      expect(unused.doStreamCalls).toHaveLength(0);
+      expect(await assistantQuota(actorA)).toBe(60);
+      expect(await db.select().from(voiceSessions).where(eq(voiceSessions.id, connected.id))).toEqual([beforeSession]);
+      expect(await db.select().from(voiceTurns).where(eq(voiceTurns.voiceSessionId, connected.id))).toEqual(beforeVoiceTurns);
+      expect(await db.select().from(conversationTurns).where(eq(conversationTurns.conversationId, conversation.id))).toEqual(beforeTurns);
+      expect(await getConversation(db, actorA, conversation.id)).toEqual(beforeConversation);
+    } finally {
+      held.release();
+      if (original) await original.text();
+    }
+    if (active) expect(await getConversation(db, actorA, conversation.id)).toMatchObject({ busy: false, lastTurn: { status: "completed" }, usage: { calls: 1 } });
   });
 
   it("binds a provider-minted private conversation to the owned login and never persists its connection token", async () => {
@@ -234,6 +318,10 @@ describe("Durable authenticated voice sessions with PostgreSQL", () => {
     const first = modelWith(tool("updateRecipe", { recipeId: recipe.id, expectedVersionId: recipe.version.id,
       content: { ...recipe.version.content, title: "George Lemon Soup" }, changeSummary: "Rename" }), text("Saved the new title."));
     await (await respondToVoice(db, connected.providerConversationId!, "0", body(partial), { model: first })).text();
+    expect(await assistantQuota(actorA)).toBe(1);
+    // Saved-change notices and their replays need no model admission, even
+    // when another conversation has since exhausted the shared allowance.
+    await assistantQuota(actorA, 60);
     const unused = modelWith(text("Must not run"));
     const review = await (await respondToVoice(db, connected.providerConversationId!, "0", body(full), { model: unused })).text();
     expect(review).toContain("already saved");
@@ -250,6 +338,7 @@ describe("Durable authenticated voice sessions with PostgreSQL", () => {
     expect(await listVersions(db, actorA, recipe.id)).toHaveLength(2);
     expect(unused.doStreamCalls).toHaveLength(0);
     expect(saved.usage.calls).toBe(first.doStreamCalls.length);
+    expect(await assistantQuota(actorA)).toBe(60);
   });
 
   it.each([true, false])("preserves native approval through a transcript revision and a later decision (%s)", async (approved) => {

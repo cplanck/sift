@@ -71,9 +71,16 @@ async function runAssistantResponse(db: Database, actor: Actor, input: unknown, 
   await getConversation(db, actor, request.conversationId);
   const userKey = await resolveGatewayCredential(db, actor.userId);
   const chooseModel = options.model ? undefined : prepareAssistantModel(userKey);
-  await consumeLimit(db, actor, "assistant", 60);
   options.abortSignal?.throwIfAborted();
-  const begin = (tx: Database) => beginConversationTurn(tx, actor, request);
+  // Charge admission only after validation, in the same transaction as the
+  // durable turn. Provider retries and rejected/stale requests must not consume
+  // a user's allowance, and an exhausted allowance must leave no reserved run.
+  const begin = (connection: Database) => connection.transaction(async (tx) => {
+    const run = await beginConversationTurn(tx, actor, request);
+    await consumeLimit(tx, actor, "assistant", 60);
+    options.abortSignal?.throwIfAborted();
+    return run;
+  });
   const started = options.beginTurn ? await options.beginTurn(begin) : await begin(db);
   // A trusted transport can settle a duplicate or a review-only notice without
   // starting another model call. HTTP input cannot supply this lifecycle hook.

@@ -43,10 +43,10 @@ async function audioInputs() {
 export function useMicrophoneTest() {
   const [devices, setDevices] = useState<{ id: string; label: string }[]>([]), [error, setError] = useState("");
   const [phase, setPhase] = useState<"idle" | "permission" | "testing">("idle"), [level, setLevel] = useState(0), [hasPermission, setHasPermission] = useState(false);
-  const mounted = useRef(false), generation = useRef(0), pending = useRef(false);
+  const mounted = useRef(false), generation = useRef(0), enumeration = useRef(0), pending = useRef(false);
   const resources = useRef<{ stream?: MediaStream; context?: AudioContext; source?: MediaStreamAudioSourceNode; meter?: AnalyserNode; sample?: ReturnType<typeof setInterval>; timeout?: ReturnType<typeof setTimeout> }>({});
   const release = useCallback(() => {
-    generation.current++; pending.current = false;
+    generation.current++; enumeration.current++; pending.current = false;
     const current = resources.current; resources.current = {};
     if (current.sample) clearInterval(current.sample);
     if (current.timeout) clearTimeout(current.timeout);
@@ -55,11 +55,16 @@ export function useMicrophoneTest() {
     if (current.context) void current.context.close().catch(() => undefined);
   }, []);
   const stop = useCallback(() => { release(); if (mounted.current) { setPhase("idle"); setLevel(0); } }, [release]);
-  const refresh = useCallback(() => audioInputs().then((found) => {
-      if (!mounted.current) return;
+  const refresh = useCallback(() => {
+    const attempt = ++enumeration.current;
+    return audioInputs().then((found) => {
+      // Permission and devicechange events can overlap. Only the newest list
+      // may replace the picker, including across Strict Mode effect restarts.
+      if (!mounted.current || enumeration.current !== attempt) return;
       setDevices(found.filter((device) => device.deviceId && device.deviceId !== "default").map((device, index) => ({ id: device.deviceId, label: device.label || `Microphone ${index + 1}` })));
       setHasPermission(found.some((device) => !!device.label));
-    }).catch((error) => { if (mounted.current) setError(microphoneError(error)); }), []);
+    }).catch((error) => { if (mounted.current && enumeration.current === attempt) setError(microphoneError(error)); });
+  }, []);
   const request = useCallback(async (test: boolean, deviceId: string) => {
     if (pending.current) return;
     release(); pending.current = true; const attempt = generation.current;
