@@ -201,10 +201,18 @@ test.describe("isolated provider stream fixture", () => {
     await expect(page.getByText("This recipe is archived.", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Open Sift", exact: true }).click();
     await expect(panel.getByText("Recipe archived", { exact: true })).toBeVisible();
+    let releaseConversation!: () => void;
+    const creatingConversation = new Promise<void>((resolve) => { releaseConversation = resolve; });
+    await page.route("**/api/conversations", async (route) => {
+      if (route.request().method() === "POST") await creatingConversation;
+      await route.continue();
+    });
     await panel.getByRole("button", { name: "New conversation", exact: true }).click();
-    await expect(panel.getByRole("button", { name: "Conversation options", exact: true })).toBeEnabled();
     mode = "billing";
+    // A draft typed while the next conversation loads must survive its arrival.
     await panel.getByRole("textbox", { name: "Message Sift", exact: true }).fill("Find a soup.");
+    await expect(panel.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
+    releaseConversation();
     await panel.getByRole("button", { name: "Send message", exact: true }).click();
     await expect(panel.getByRole("alert").filter({ hasText: "Gateway account’s billing, credits" })).toBeVisible();
     await expect(panel.getByRole("textbox", { name: "Message Sift", exact: true })).toHaveValue("Find a soup.");

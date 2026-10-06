@@ -57,10 +57,10 @@ function ToolIcon({ name, className = "size-3.5 shrink-0" }: { name: string; cla
 const succeeded = (part: ToolPart) => part.state === "output-available" && !!part.output && typeof part.output === "object" && ("ok" in part.output ? part.output.ok === true : !("error" in part.output));
 
 type Segment = { kind: "part"; part: Part; index: number } | { kind: "lookups"; parts: { part: ToolPart; index: number }[] };
-function segments(parts: Part[]) {
+function segments(parts: Part[], messageId: string, liveArtifactReceipts: ReadonlySet<string>) {
   const result: Segment[] = [];
   parts.forEach((part, index) => {
-    if (isToolUIPart(part) && lookups.has(toolName(part)) && succeeded(part)) {
+    if (isToolUIPart(part) && lookups.has(toolName(part)) && succeeded(part) && !liveArtifactReceipts.has(`${messageId}:${index}`)) {
       const last = result.at(-1);
       if (last?.kind === "lookups") last.parts.push({ part, index });
       else result.push({ kind: "lookups", parts: [{ part, index }] });
@@ -96,7 +96,7 @@ export const AssistantMessage = memo(function AssistantMessage({ message, busy, 
   return <article aria-label="Sift response" aria-busy={streaming} className={`sift-response ${animate ? "sift-enter" : ""}`}>
     <div className="min-w-0 space-y-3">
       <p className="mb-2.5 flex items-center gap-1.5"><SiftMark className={`size-5 ${streaming ? "sift-pulse" : ""}`} /><span className="sr-only">Sift</span></p>
-      {segments(message.parts).map((segment) => segment.kind === "lookups"
+      {segments(message.parts, message.id, liveArtifactReceipts).map((segment) => segment.kind === "lookups"
         ? <LookupGroup key={segment.parts[0].part.toolCallId} parts={segment.parts} onNavigate={onNavigate} />
         : segment.part.type === "text"
           ? segment.part.text ? <AssistantMarkdown key={segment.index} text={segment.part.text} streaming={streaming && segment.index === lastTextIndex && last === segment.part} onNavigate={onNavigate} /> : null

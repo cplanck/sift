@@ -82,12 +82,13 @@ function AssistantShellContent({ children }: { children: React.ReactNode }) {
   const voice = useVoiceSession({ ensureConversation, getPageContext, contextSignal: JSON.stringify({ pathname, page }), refreshConversation: refreshVoiceConversation, openTranscript });
   async function loadConversation(id: string) {
     setLoading(true); setError("");
+    if (conversationRef.current?.id !== id) setDraft("");
     try { setConversation(await api<Conversation>(`/api/conversations/${id}`)); }
     catch (error) { setError(error instanceof Error ? error.message : "Couldn’t open this conversation."); }
     finally { setLoading(false); }
   }
   async function newConversation() {
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setDraft("");
     try { const created = await api<Conversation>("/api/conversations", { body: {} }); setConversation(created); await refreshHistory(); }
     catch (error) { setError(error instanceof Error ? error.message : "Couldn’t start a conversation."); }
     finally { setLoading(false); }
