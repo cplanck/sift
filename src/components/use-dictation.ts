@@ -33,7 +33,9 @@ export function useDictation(onText: (text: string) => void) {
   const emit = useRef(onText);
   useEffect(() => { emit.current = onText; }, [onText]);
 
-  const stop = useCallback(() => { active.current?.stop(); }, []);
+  // Speech engines often deliver one last result after stop(). Detach first so a
+  // late result can't refill the composer after the message was sent.
+  const stop = useCallback(() => { const current = active.current; if (!current) return; active.current = null; setListening(false); current.stop(); }, []);
   const start = useCallback((existing: string) => {
     const Recognition = recognitionClass();
     if (!Recognition || active.current) return;
@@ -41,12 +43,13 @@ export function useDictation(onText: (text: string) => void) {
     recognition.continuous = true; recognition.interimResults = true; recognition.lang = navigator.language || "en-US";
     const prefix = existing.trim() ? `${existing.trimEnd()} ` : "";
     recognition.onresult = (event) => {
+      if (active.current !== recognition) return;
       // Rebuild from every result each time; interim results are replaced in place.
       let transcript = "";
       for (let index = 0; index < event.results.length; index++) transcript += event.results[index][0].transcript;
       emit.current(prefix + transcript.trimStart());
     };
-    recognition.onerror = (event) => { if (event.error !== "no-speech" && event.error !== "aborted") setError(dictationError(event.error)); };
+    recognition.onerror = (event) => { if (active.current === recognition && event.error !== "no-speech" && event.error !== "aborted") setError(dictationError(event.error)); };
     recognition.onend = () => { if (active.current === recognition) { active.current = null; setListening(false); } };
     active.current = recognition; setError(""); setListening(true);
     try { recognition.start(); }

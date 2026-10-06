@@ -1,7 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "@/lib/client-http";
-import { putPhoto, resizePhoto } from "./photo-upload";
+import { resizePhoto, uploadPhoto } from "./photo-upload";
 
 export const maxChatPhotos = 4;
 export type ChatPhoto = { key: string; preview: string; status: "uploading" | "ready" | "error"; progress: number; id?: string; error?: string };
@@ -24,11 +23,9 @@ export function useChatPhotos() {
     for (const { file, photo } of added) {
       const task = (async () => {
         const blob = await resizePhoto(file);
-        const upload = await api<{ id: string; url: string }>("/api/photos/uploads", { body: { purpose: "chat", contentType: blob.type, byteSize: blob.size } });
-        await putPhoto(upload.url, blob, (progress) => patch(photo.key, { progress }));
-        await api(`/api/photos/${upload.id}/complete`, { method: "POST" });
-        patch(photo.key, { status: "ready", id: upload.id, progress: 100 });
-        return upload.id;
+        const id = await uploadPhoto(blob, { purpose: "chat" }, (progress) => patch(photo.key, { progress }));
+        patch(photo.key, { status: "ready", id, progress: 100 });
+        return id;
       })();
       task.catch((error: unknown) => patch(photo.key, { status: "error", error: error instanceof Error ? error.message : "Couldn’t upload this photo." }));
       tasks.current.set(photo.key, task);

@@ -9,6 +9,7 @@ import { AssistantPanel } from "./assistant-panel";
 import { GatewaySettings } from "./gateway-settings";
 import { useVoiceSession, type SiftVoice } from "./use-voice-session";
 import { VoiceDetailsDialog } from "./voice-controls";
+import { ResumeCooking } from "./resume-cooking";
 
 export type Conversation = Awaited<ReturnType<typeof getConversation>>;
 export type ConversationList = Awaited<ReturnType<typeof listConversations>>;
@@ -110,5 +111,6 @@ function AssistantShellContent({ children }: { children: React.ReactNode }) {
     <AssistantPanel key={conversation?.id ?? "empty"} open={open} onOpenChange={openPanel} conversation={conversation} history={history} loading={loading} loadError={error} pageLabel={pageLabel} getPageContext={getPageContext} onSettings={openSettings} onNew={newConversation} onLoad={loadConversation} onHistory={refreshHistory} onConversationChanged={updateConversation} voice={voice} onVoiceDetails={() => setVoiceDetailsOpen(true)} subscribeVoiceConversation={subscribeVoiceConversation} input={draft} onInputChange={setDraft} />
     <VoiceDetailsDialog open={voiceDetailsOpen} onOpenChange={setVoiceDetailsOpen} voice={voice} onText={() => void showText(true)} onTranscript={() => void showText(false)} />
     <GatewaySettings open={settingsOpen} onOpenChange={setSettingsOpen} />
+    <ResumeCooking />
   </AssistantContext.Provider>;
 }

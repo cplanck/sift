@@ -33,7 +33,7 @@ test("a cook pins its version, persists progress and session notes, and finishes
   expect(await getSession()).toMatchObject({ recipeVersionId: recipe.version.id, status: "active", servings: 4, revision: 1 });
   await expect(page.getByRole("region", { name: "Current cooking step" }).getByText("Chop the carrots.", { exact: true })).toBeVisible();
   await page.getByText("Ingredients & details", { exact: true }).click();
-  await page.getByRole("checkbox", { name: "2 cups broth", exact: true }).check();
+  await page.getByRole("tabpanel", { name: "Ingredients" }).getByRole("checkbox", { name: "2 cups broth", exact: true }).check();
   await expect.poll(async () => (await getSession()).progress.checkedIngredients).toEqual(["0:0"]);
   await page.getByRole("button", { name: "Mark step done", exact: true }).click();
   await expect.poll(async () => (await getSession()).progress.checkedSteps).toEqual(["0:0"]);
@@ -41,7 +41,7 @@ test("a cook pins its version, persists progress and session notes, and finishes
   await expect.poll(async () => (await getSession()).progress.currentStep).toBe(1);
   await page.getByRole("button", { name: "More cooking servings", exact: true }).click();
   await expect.poll(async () => (await getSession()).servings).toBe(5);
-  await expect(page.getByRole("checkbox", { name: "2½ cups broth", exact: true })).toBeChecked();
+  await expect(page.getByRole("tabpanel", { name: "Ingredients" }).getByRole("checkbox", { name: "2½ cups broth", exact: true })).toBeChecked();
 
   await page.getByRole("tab", { name: "Cook notes", exact: true }).click();
   await page.getByRole("textbox", { name: "Cooking note", exact: true }).fill("Roasted the carrots first. Keep this observation with this cook.");
@@ -66,12 +66,12 @@ test("a cook pins its version, persists progress and session notes, and finishes
 
   await page.getByText("Ingredients & details", { exact: true }).click();
   await page.context().setOffline(true);
-  await page.getByRole("checkbox", { name: "3¾ carrots", exact: true }).check();
+  await page.getByRole("tabpanel", { name: "Ingredients" }).getByRole("checkbox", { name: "3¾ carrots", exact: true }).check();
   await expect(page.getByText(/Checkoffs on this screen won’t save or sync/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Finish cooking", exact: true })).toBeDisabled();
   await page.context().setOffline(false);
   await page.getByRole("button", { name: "Reload saved progress", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: "3¾ carrots", exact: true })).not.toBeChecked();
+  await expect(page.getByRole("tabpanel", { name: "Ingredients" }).getByRole("checkbox", { name: "3¾ carrots", exact: true })).not.toBeChecked();
   expect((await getSession()).progress.checkedIngredients).toEqual(["0:0"]);
 
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();

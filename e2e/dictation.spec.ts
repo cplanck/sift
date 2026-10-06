@@ -53,3 +53,42 @@ test("without the Web Speech API, dictation points to the keyboard's mic key", a
   await expect(panel.getByText("Tap the microphone on your keyboard to dictate.")).toBeVisible();
   await expect(panel.getByRole("textbox", { name: "Message Sift", exact: true })).toBeFocused();
 });
+
+test("a sent message doesn't come back into the composer from dictation", async ({ page }) => {
+  // This recognizer behaves like real engines: stop() delivers one last result.
+  await page.addInitScript(() => {
+    class LateRecognition {
+      continuous = false; interimResults = false; lang = "";
+      onresult: ((event: unknown) => void) | null = null; onerror: ((event: unknown) => void) | null = null; onend: (() => void) | null = null;
+      result = (text: string) => ({ results: [Object.assign([{ transcript: text, confidence: 1 }], { isFinal: true })] });
+      start() { setTimeout(() => this.onresult?.(this.result("Plan dinner for four")), 50); }
+      stop() { setTimeout(() => { this.onresult?.(this.result("Plan dinner for four tonight")); this.onend?.(); }, 30); }
+      abort() { this.onend?.(); }
+    }
+    Object.assign(window, { SpeechRecognition: LateRecognition, webkitSpeechRecognition: LateRecognition });
+  });
+  await page.route("**/api/assistant", (route) => route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "x-vercel-ai-ui-message-stream": "v1" },
+    body: [{ type: "start", messageId: crypto.randomUUID() }, { type: "text-start", id: "t" }, { type: "text-delta", id: "t", delta: "Here’s a plan." }, { type: "text-end", id: "t" }, { type: "finish" }].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n" }));
+  await signUp(page);
+  await page.goto("/library");
+  await page.getByRole("button", { name: "Open Sift", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "sift", exact: true });
+  const composer = panel.getByRole("textbox", { name: "Message Sift", exact: true });
+  await expect(panel.getByRole("button", { name: /^Assistant model:/ })).toBeVisible();
+  await panel.getByRole("button", { name: "Dictate message", exact: true }).click();
+  await expect(composer).toHaveValue("Plan dinner for four");
+  await panel.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(panel.getByRole("article", { name: "Your message", exact: true })).toContainText("Plan dinner for four");
+  await page.waitForTimeout(300);
+  await expect(composer).toHaveValue("");
+
+  // iOS keyboard dictation commits its text into the field after it was cleared.
+  await page.evaluate(() => {
+    const field = document.getElementById("sift-composer") as HTMLTextAreaElement;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "Plan dinner for four");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await expect(composer).toHaveValue("");
+  await composer.pressSequentially("Thanks");
+  await expect(composer).toHaveValue("Thanks");
+});

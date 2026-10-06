@@ -1,11 +1,11 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Executor } from "@/db/connection";
 import { cookingSessionNotes, cookingSessions, photos, recipes, recipeVersions } from "@/db/schema";
 import { cookingFinishSchema, cookingNoteSchema, cookingProgressSchema, cookingStartSchema, type CookingHistoryItem, type CookingProgress, type CookingSessionDetail } from "@/domain/cooking";
 import { DomainError } from "@/domain/errors";
 import type { RecipeContent } from "@/domain/recipe";
-import { getRecipe } from "./recipes";
+import { getRecipe, listRecipeNotes } from "./recipes";
 import { assertMembership, type Actor } from "./workspaces";
 
 function scope(actor: Actor, id: string) {
@@ -78,13 +78,32 @@ export async function getActiveCookingSession(db: Database, actor: Actor, recipe
   return session ? getCookingSession(db, actor, session.id) : null;
 }
 
+/**
+ * What past cooks of a recipe taught: the newest recipe notes, and the last few
+ * finished cooks with their rating, summary and in-the-moment notes. Bounded so
+ * it can ride along with every recipe read.
+ */
+export async function getRecipeLearnings(db: Database, actor: Actor, recipeId: string) {
+  const [notes, history] = await Promise.all([listRecipeNotes(db, actor, recipeId), listCookingHistory(db, actor, recipeId)]);
+  const finished = history.filter((cook) => cook.status !== "active"), cooks = finished.slice(0, 5);
+  const cookNotes = cooks.length ? await db.select({ sessionId: cookingSessionNotes.sessionId, body: cookingSessionNotes.body }).from(cookingSessionNotes)
+    .where(and(eq(cookingSessionNotes.workspaceId, actor.workspaceId), inArray(cookingSessionNotes.sessionId, cooks.map((cook) => cook.id)))).orderBy(desc(cookingSessionNotes.createdAt)) : [];
+  return {
+    notes: notes.slice(0, 10).map((note) => ({ body: note.body.slice(0, 1000), createdAt: note.createdAt.toISOString() })), totalNotes: notes.length,
+    pastCooks: cooks.map((cook) => ({ sessionId: cook.id, status: cook.status, finishedAt: cook.finishedAt, versionNumber: cook.versionNumber, servings: cook.servings, rating: cook.rating, summary: cook.summary,
+      notes: cookNotes.filter((note) => note.sessionId === cook.id).slice(0, 5).map((note) => note.body.slice(0, 600)) })),
+    totalPastCooks: finished.length,
+  };
+}
+
 /** The user's in-progress cooks across every recipe, newest first. */
 export async function listActiveCookingSessions(db: Database, actor: Actor) {
   await assertMembership(db, actor);
-  const rows = await db.select({ id: cookingSessions.id, recipeId: cookingSessions.recipeId, startedAt: cookingSessions.startedAt, servings: cookingSessions.servings, title: recipeVersions.content }).from(cookingSessions)
+  const rows = await db.select({ id: cookingSessions.id, recipeId: cookingSessions.recipeId, startedAt: cookingSessions.startedAt, servings: cookingSessions.servings, progress: cookingSessions.progress, content: recipeVersions.content }).from(cookingSessions)
     .innerJoin(recipeVersions, and(eq(recipeVersions.id, cookingSessions.recipeVersionId), eq(recipeVersions.workspaceId, actor.workspaceId)))
     .where(and(eq(cookingSessions.workspaceId, actor.workspaceId), eq(cookingSessions.startedByUserId, actor.userId), eq(cookingSessions.status, "active"))).orderBy(desc(cookingSessions.startedAt));
-  return rows.map((row) => ({ sessionId: row.id, recipeId: row.recipeId, title: row.title.title, servings: row.servings, startedAt: row.startedAt.toISOString() }));
+  return rows.map((row) => ({ sessionId: row.id, recipeId: row.recipeId, title: row.content.title, servings: row.servings, startedAt: row.startedAt.toISOString(),
+    currentStep: row.progress.currentStep, totalSteps: row.content.instructionSections.reduce((total, section) => total + section.steps.length, 0) }));
 }
 
 export async function listCookingHistory(db: Database, actor: Actor, recipeId: string): Promise<CookingHistoryItem[]> {

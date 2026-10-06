@@ -105,7 +105,7 @@ test("Escape stops a reply instead of closing the conversation", async ({ page }
   await expect(panel).toBeHidden();
 });
 
-test("the agent can open a page and confirm before deleting a list", async ({ page }) => {
+test("the agent can open a page and confirm before deleting a list", async ({ page }, info) => {
   const stream = await controlledAssistant(page);
   await signUp(page);
   const created = await page.request.post("/api/artifacts", { headers, data: { kind: "grocery", title: "Market run", groups: [{ name: "", items: [{ text: "Leeks" }] }] } });
@@ -125,8 +125,8 @@ test("the agent can open a page and confirm before deleting a list", async ({ pa
     { type: "finish-step" }, { type: "finish" });
   await stream.close();
   await expect(page).toHaveURL(new RegExp(`/artifacts/${list.id}$`));
-  const sheet = (await panel.isVisible()) ? panel : null;
-  if (!sheet) await page.getByRole("button", { name: "Open Sift", exact: true }).click();
+  // On a phone the full-screen sheet closes so the opened page is visible.
+  if (info.project.name === "phone") { await expect(panel).toBeHidden(); await page.getByRole("button", { name: "Open Sift", exact: true }).click(); }
   await expect(panel.getByText("Delete “Market run”? This can’t be undone.")).toBeVisible();
   await expect(panel.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Keep it", exact: true })).toBeVisible();
@@ -137,9 +137,9 @@ test("photos attach, paste, upload and send with the message", async ({ page }, 
   const stream = await controlledAssistant(page);
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
   let uploads = 0;
-  await page.route("**/api/photos/uploads", (route) => { uploads++; return route.fulfill({ status: 201, json: { id: `00000000-0000-4000-8000-00000000000${uploads}`, url: `https://storage.test/put/${uploads}`, expiresIn: 300 } }); });
-  await page.route("https://storage.test/**", (route) => route.fulfill({ status: 200, headers: { "Access-Control-Allow-Origin": "*" }, body: "" }));
-  await page.route("**/api/photos/*/complete", (route) => route.fulfill({ json: { id: "ok" } }));
+  await page.route("**/api/photos/uploads", (route) => { uploads++; return route.fulfill({ status: 201, json: { id: `00000000-0000-4000-8000-00000000000${uploads}`, url: "unused", expiresIn: 300 } }); });
+  // Uploads go to Sift itself (same origin); the browser never contacts storage.
+  await page.route("**/api/photos/*/content", (route) => { expect(route.request().method()).toBe("PUT"); return route.fulfill({ json: { id: "ok" } }); });
   await page.route(/\/api\/photos\/[0-9a-f-]{36}$/, (route) => route.fulfill({ status: 200, contentType: "image/png", body: png }));
   await signUp(page);
   await page.goto("/library");
@@ -170,4 +170,60 @@ test("photos attach, paste, upload and send with the message", async ({ page }, 
   await stream.close();
   await expect(panel.getByText("Grandma’s Lemon Bars")).toBeVisible();
   await page.screenshot({ path: `test-results/chat-photo-sent-${info.project.name}.png`, animations: "disabled" });
+});
+
+test("scrolling up during a reply isn't pulled back down, and lists copy on their own", async ({ page, context, browserName }, info) => {
+  test.skip(info.project.name !== "desktop", "Mouse wheel scrolling is a desktop gesture.");
+  const stream = await controlledAssistant(page);
+  await signUp(page);
+  await page.goto("/library");
+  await page.getByRole("button", { name: "Open Sift", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "sift", exact: true });
+  const log = panel.getByRole("log", { name: "Conversation messages", exact: true });
+  await panel.getByRole("textbox", { name: "Message Sift", exact: true }).fill("Shopping list for the sweet potato curry");
+  await panel.getByRole("button", { name: "Send message", exact: true }).click();
+  await stream.ready();
+  const filler = Array.from({ length: 40 }, (_, i) => `Paragraph ${i + 1} about the curry and how to shop for it well.`).join("\n\n");
+  await stream.push({ type: "start", messageId: crypto.randomUUID() }, { type: "text-start", id: "t" }, { type: "text-delta", id: "t", delta: `${filler}\n\n` });
+  await expect(log.getByText("Paragraph 40", { exact: false })).toBeVisible();
+  await log.hover();
+  await page.mouse.wheel(0, -1500);
+  await expect.poll(() => log.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeGreaterThan(400);
+  const position = await log.evaluate((element) => element.scrollTop);
+  for (let i = 0; i < 5; i++) await stream.push({ type: "text-delta", id: "t", delta: `More text ${i}.\n\n` });
+  await expect(log.getByText("More text 4.", { exact: true })).toBeAttached();
+  expect(await log.evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(position + 2);
+  await expect(panel.getByRole("button", { name: "Jump to latest message", exact: true })).toBeVisible();
+
+  await stream.push({ type: "text-delta", id: "t", delta: "**Produce**\n\n- 2 lb sweet potatoes\n- 1 bunch **cilantro**\n- 2 limes\n" }, { type: "text-end", id: "t" }, { type: "finish" });
+  await stream.close();
+  await panel.getByRole("button", { name: "Jump to latest message", exact: true }).click();
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await log.getByRole("button", { name: "Copy list", exact: true }).click();
+  await expect(log.getByRole("button", { name: "List copied", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("- 2 lb sweet potatoes\n- 1 bunch cilantro\n- 2 limes");
+  void browserName;
+});
+
+test("a finger drag up during a reply stays where the reader put it", async ({ page }, info) => {
+  test.skip(info.project.name !== "phone", "Touch dragging is a phone gesture.");
+  const stream = await controlledAssistant(page);
+  await signUp(page);
+  await page.goto("/library");
+  await page.getByRole("button", { name: "Open Sift", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "sift", exact: true });
+  const log = panel.getByRole("log", { name: "Conversation messages", exact: true });
+  await panel.getByRole("textbox", { name: "Message Sift", exact: true }).fill("Long answer please");
+  await panel.getByRole("button", { name: "Send message", exact: true }).click();
+  await stream.ready();
+  await stream.push({ type: "start", messageId: crypto.randomUUID() }, { type: "text-start", id: "t" }, { type: "text-delta", id: "t", delta: Array.from({ length: 40 }, (_, i) => `Line ${i + 1} of a long streaming answer.`).join("\n\n") });
+  await expect(log.getByText("Line 40", { exact: false })).toBeVisible();
+  const box = (await log.boundingBox())!;
+  const cdp = await page.context().newCDPSession(page);
+  // Keep text arriving while a slow finger drags the conversation down (scrolls up).
+  let streaming = true;
+  const feeder = (async () => { for (let i = 0; streaming && i < 200; i++) { await stream.push({ type: "text-delta", id: "t", delta: `\n\nMore ${i}.` }); await page.waitForTimeout(40); } })();
+  await cdp.send("Input.synthesizeScrollGesture", { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 3), yDistance: 400, speed: 80, gestureSourceType: "touch", preventFling: true });
+  streaming = false; await feeder;
+  expect(await log.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeGreaterThan(300);
 });

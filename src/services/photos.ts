@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { Database, Executor } from "@/db/connection";
 import { photos, recipes } from "@/db/schema";
 import { DomainError } from "@/domain/errors";
-import { deletePhotoObject, MAX_PHOTO_BYTES, r2, readPhotoObject, signPhotoUpload, writePhotoObject } from "@/lib/r2";
+import { deletePhotoObject, MAX_PHOTO_BYTES, r2, readPhotoObject, signPhotoUpload, writePhotoObject, writeUploadObject } from "@/lib/r2";
 import { assertMembership, type Actor } from "./workspaces";
 import { getRecipe } from "./recipes";
 import { consumeLimit } from "./rate-limit";
@@ -27,6 +27,19 @@ export async function preparePhotoUpload(db: Database, actor: Actor, input: unkn
   const url = await signPhotoUpload(objectKey, data.contentType, data.byteSize);
   await db.insert(photos).values({ id, workspaceId: actor.workspaceId, recipeId: session?.recipeId ?? data.recipeId, sessionId: session?.id, purpose: data.purpose, objectKey, contentType: data.contentType, byteSize: data.byteSize, createdByUserId: actor.userId });
   return { id, url, expiresIn: 300 };
+}
+
+/**
+ * Stores an upload that came through Sift's own server (same origin, so the
+ * bucket needs no browser CORS rules), then finalizes it like a direct upload.
+ */
+export async function receivePhotoUpload(db: Database, actor: Actor, id: string, bytes: Uint8Array) {
+  const photo = await getPhoto(db, actor, id);
+  if (photo.createdByUserId !== actor.userId) throw new DomainError("NOT_FOUND", "Photo not found.");
+  if (photo.status === "ready") return { id: photo.id };
+  if (bytes.byteLength !== photo.byteSize) throw new DomainError("INVALID_INPUT", "The uploaded file size changed. Please upload it again.");
+  await writeUploadObject(photo.objectKey, bytes, photo.contentType);
+  return finishPhotoUpload(db, actor, id);
 }
 
 export async function getPhoto(db: Database, actor: Actor, id: string) {

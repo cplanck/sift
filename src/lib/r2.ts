@@ -42,6 +42,10 @@ export async function writePhotoObject(key: string, bytes: Uint8Array) {
   const { client, bucket } = r2();
   await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: "image/webp", Body: bytes }), { abortSignal: AbortSignal.timeout(20000) });
 }
+export async function writeUploadObject(key: string, bytes: Uint8Array, contentType: string) {
+  const { client, bucket } = r2();
+  await client.send(new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType, Body: bytes }), { abortSignal: AbortSignal.timeout(20000) });
+}
 export async function deletePhotoObject(key: string) {
   const { client, bucket } = r2();
   await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(10000) });

@@ -6,12 +6,12 @@ import { connectDatabase } from "@/db/connection";
 import { photos, recipes, usageLimits, users } from "@/db/schema";
 import { ensurePersonalWorkspace, type Actor } from "@/services/workspaces";
 import { createRecipe, getRecipe } from "@/services/recipes";
-import { finishPhotoUpload, getPhoto, listRecipePhotos, normalizePhoto, preparePhotoUpload, setCoverPhoto } from "@/services/photos";
+import { finishPhotoUpload, getPhoto, listRecipePhotos, normalizePhoto, preparePhotoUpload, receivePhotoUpload, setCoverPhoto } from "@/services/photos";
 import { testDatabaseUrl } from "./database";
 
 // Only R2's external transport is mocked here. Authorization, transactions,
 // metadata, image decoding, and normalization use real PostgreSQL and Sharp.
-const storage = vi.hoisted(() => ({ r2: vi.fn(), signPhotoUpload: vi.fn(), readPhotoObject: vi.fn(), writePhotoObject: vi.fn(), deletePhotoObject: vi.fn() }));
+const storage = vi.hoisted(() => ({ r2: vi.fn(), signPhotoUpload: vi.fn(), readPhotoObject: vi.fn(), writePhotoObject: vi.fn(), writeUploadObject: vi.fn(), deletePhotoObject: vi.fn() }));
 vi.mock("@/lib/r2", () => ({ ...storage, MAX_PHOTO_BYTES: 8 * 1024 * 1024 }));
 const { db, pool } = connectDatabase(testDatabaseUrl);
 const userIds = [randomUUID(), randomUUID()];
@@ -30,6 +30,7 @@ beforeEach(() => {
   storage.readPhotoObject.mockImplementation(async () => png);
   storage.writePhotoObject.mockResolvedValue(undefined);
   storage.deletePhotoObject.mockResolvedValue(undefined);
+  storage.writeUploadObject.mockResolvedValue(undefined);
 });
 afterAll(async () => {
   await db.update(recipes).set({ currentVersionId: null }).where(inArray(recipes.workspaceId, [actorA.workspaceId, actorB.workspaceId]));
@@ -157,5 +158,21 @@ describe("photo services with real DB and isolated R2 transport", () => {
       expect(storage.readPhotoObject).not.toHaveBeenCalled();
       expect(storage.writePhotoObject).not.toHaveBeenCalled();
     } finally { await db.delete(usageLimits).where(like(usageLimits.key, `${actorA.userId}:photo_finalize:%`)); }
+  });
+
+  it("accepts uploads through Sift itself, so storage needs no browser CORS rules", async () => {
+    const recipe = await createRecipe(db, actorA, { content, source: { type: "manual" }, status: "active" });
+    const photo = await pendingPhoto(actorA, recipe.id);
+    await expect(receivePhotoUpload(db, actorB, photo.id, png)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(receivePhotoUpload(db, actorA, photo.id, png.subarray(1))).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    storage.writeUploadObject.mockClear();
+    await receivePhotoUpload(db, actorA, photo.id, png);
+    expect(storage.writeUploadObject).toHaveBeenCalledWith(photo.objectKey, png, "image/png");
+    expect((await getPhoto(db, actorA, photo.id)).status).toBe("ready");
+    expect((await getRecipe(db, actorA, recipe.id)).coverPhotoId).toBe(photo.id);
+    // A repeated request after success is a no-op, not a second write.
+    storage.writeUploadObject.mockClear();
+    await receivePhotoUpload(db, actorA, photo.id, png);
+    expect(storage.writeUploadObject).not.toHaveBeenCalled();
   });
 });

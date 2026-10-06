@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Archive, ArrowLeft, Check, Clock3, History, MoreHorizontal, Pencil, Plus, RotateCcw, Minus } from "lucide-react";
+import { Archive, ArrowLeft, Camera, Check, Clock3, History, MoreHorizontal, Pencil, Plus, RotateCcw, Minus } from "lucide-react";
 import type { getRecipe, listRecipeNotes, listVersions } from "@/services/recipes";
 import type { listRecipePhotos } from "@/services/photos";
 import type { CookingHistoryItem } from "@/domain/cooking";
@@ -58,7 +58,10 @@ export function RecipeDetail({ recipe, notes, versions, photos, cookingHistory, 
     </div></div>
     {recipe.status !== "active" && <div className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-muted/40 p-4 text-sm"><span>{recipe.status === "draft" ? "This recipe is a draft. Review it before saving to your Library." : "This recipe is archived."}</span>{recipe.status === "draft" ? recipe.reviewImportId && <Button asChild size="sm"><Link href={`/imports/${recipe.reviewImportId}`}>Review import</Link></Button> : <Button disabled={busy} size="sm" onClick={() => mutate({ action: "status", status: "active" })}>Return to Library</Button>}</div>}
     <div className="grid items-start gap-6 sm:grid-cols-[minmax(0,.8fr)_minmax(0,1.2fr)] sm:gap-8">
-      <RecipeThumbnail photoId={recipe.coverPhotoId} recipeId={recipe.id} stockPhoto={recipe.stockPhoto} title={content.title} tags={content.tags} alt={content.title} eager sizes="(max-width: 640px) 100vw, 420px" className="aspect-[2/1] w-full rounded-2xl sm:aspect-square" />
+      <div className="relative">
+        <RecipeThumbnail photoId={recipe.coverPhotoId} recipeId={recipe.id} stockPhoto={recipe.stockPhoto} title={content.title} tags={content.tags} alt={content.title} eager sizes="(max-width: 640px) 100vw, 420px" className="aspect-[2/1] w-full rounded-2xl sm:aspect-square" />
+        <button type="button" onClick={() => { setSection("photos"); requestAnimationFrame(() => document.getElementById("recipe-sections")?.scrollIntoView({ behavior: "smooth", block: "start" })); }} className="absolute bottom-3 right-3 inline-flex min-h-9 items-center gap-1.5 rounded-full bg-background/85 px-3 text-xs font-medium shadow-sm backdrop-blur transition-colors hover:bg-background focus-visible:outline-2 focus-visible:outline-ring"><Camera className="size-3.5" />{recipe.coverPhotoId ? "Change photo" : "Add your photo"}</button>
+      </div>
       <header className="min-w-0 py-1">
         <h1 className="break-words text-[28px] font-semibold leading-[1.15] tracking-[-.035em] text-balance sm:text-[32px] lg:text-[36px]">{content.title}</h1>
         {summary && <p className="mt-3 text-sm leading-6 text-muted-foreground">{summary}{hasMoreDescription && <button className="ml-1 underline underline-offset-4 hover:text-foreground" onClick={() => { setSection("notes"); document.getElementById("recipe-sections")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>Read more</button>}</p>}

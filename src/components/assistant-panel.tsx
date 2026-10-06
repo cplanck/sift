@@ -14,6 +14,7 @@ import { AssistantDetails } from "./assistant-details";
 import { ModelSelector } from "./model-selector";
 import type { SiftVoice } from "./use-voice-session";
 import { useDictation } from "./use-dictation";
+import { isSentEcho } from "./composer-echo";
 import { maxChatPhotos, useChatPhotos } from "./use-chat-photos";
 import Image from "next/image";
 import { VoiceIndicator, VoiceLauncher, voiceLabels } from "./voice-launcher";
@@ -50,8 +51,8 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
   const [clientError, setClientError] = useState("");
   const [showLatest, setShowLatest] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false), [historyLoading, setHistoryLoading] = useState(false);
-  const scrollArea = useRef<HTMLDivElement>(null), nearBottom = useRef(true), submitted = useRef<{ id: string; text: string } | null>(null);
-  const composer = useRef<HTMLTextAreaElement>(null);
+  const scrollArea = useRef<HTMLDivElement>(null), nearBottom = useRef(true), touching = useRef(false), submitted = useRef<{ id: string; text: string } | null>(null);
+  const composer = useRef<HTMLTextAreaElement>(null), lastSent = useRef<{ text: string; at: number } | null>(null);
   const dictation = useDictation(setInput), [keyboardHint, setKeyboardHint] = useState(false);
   const photos = useChatPhotos(), [sendingPhotos, setSendingPhotos] = useState(false), [photoNotice, setPhotoNotice] = useState("");
   const photoInput = useRef<HTMLInputElement>(null);
@@ -124,7 +125,9 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
     const timer = setInterval(() => { void reloadSaved(); }, 2500);
     return () => clearInterval(timer);
   }, [serverBusy, streaming, reloadSaved]);
-  useEffect(() => { if (nearBottom.current) scrollArea.current?.scrollTo({ top: messages.length ? scrollArea.current.scrollHeight : 0, behavior: "instant" }); }, [messages, streaming, open]);
+  // Follow a streaming reply only while the reader is at the bottom and not
+  // touching the list; otherwise every delta would yank them back down.
+  useEffect(() => { if (nearBottom.current && !touching.current) scrollArea.current?.scrollTo({ top: messages.length ? scrollArea.current.scrollHeight : 0, behavior: "instant" }); }, [messages, streaming, open]);
   useEffect(() => {
     let changed = false, navigateTo: string | null = null;
     for (const message of messages) for (const part of message.parts) {
@@ -157,7 +160,7 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
       catch { setPhotoNotice("A photo didn’t upload. Remove it or attach it again."); return; }
       finally { setSendingPhotos(false); }
     }
-    const id = crypto.randomUUID(); submitted.current = { id, text }; setInput(""); photos.clear(); setPhotoNotice(""); setSavedError(""); setClientError(""); setActionError(""); clearError(); nearBottom.current = true;
+    const id = crypto.randomUUID(); submitted.current = { id, text }; lastSent.current = { text, at: Date.now() }; setInput(""); photos.clear(); setPhotoNotice(""); setSavedError(""); setClientError(""); setActionError(""); clearError(); nearBottom.current = true;
     await sendMessage({ id, role: "user", parts: [...photoIds.map((photoId) => ({ type: "file" as const, mediaType: "image/webp", url: `/api/photos/${photoId}` })), ...(text ? [{ type: "text" as const, text }] : [])] });
   }
   async function approve(id: string, approved: boolean) {
@@ -186,7 +189,7 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           <Button variant="ghost" size="icon" aria-label="New conversation" title="New conversation" disabled={busy} className="rounded-full text-muted-foreground" onClick={() => { setAction(null); void onNew(); }}><Plus className="size-[18px]" /></Button>
-          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="Conversation options" title="Conversation options" disabled={!conversation} className="rounded-full text-muted-foreground"><MoreHorizontal className="size-[18px]" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-56 rounded-xl p-1.5"><DropdownMenuItem onSelect={() => setUsageOpen(true)}><ReceiptText />Conversation usage</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem disabled={busy} onSelect={() => { setAction("rename"); setActionError(""); }}><Pencil />Rename conversation</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => { setAction("delete"); setActionError(""); }}><Trash2 />Delete conversation</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={onSettings}><Settings2 />Sift settings</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label="Conversation options" title="Conversation options" disabled={!conversation || loading} className="rounded-full text-muted-foreground"><MoreHorizontal className="size-[18px]" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-56 rounded-xl p-1.5"><DropdownMenuItem onSelect={() => setUsageOpen(true)}><ReceiptText />Conversation usage</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem disabled={busy} onSelect={() => { setAction("rename"); setActionError(""); }}><Pencil />Rename conversation</DropdownMenuItem><DropdownMenuItem disabled={busy} onSelect={() => { setAction("delete"); setActionError(""); }}><Trash2 />Delete conversation</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem onSelect={onSettings}><Settings2 />Sift settings</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
           <SheetClose asChild><Button variant="ghost" size="icon" aria-label="Close Sift" title="Close conversation" className="rounded-full text-muted-foreground"><X className="size-[18px]" /></Button></SheetClose>
         </div>
       </SheetHeader>
@@ -206,7 +209,7 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
           finally { setActionBusy(false); }
         }}>Confirm delete</Button><Button size="sm" variant="ghost" disabled={actionBusy} onClick={() => setAction(null)}>Cancel</Button></div></div>}
         <div className="relative min-h-0 flex-1">
-          <div ref={scrollArea} onScroll={(event) => { const target = event.currentTarget; nearBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight < 100; setShowLatest(!nearBottom.current); }} className={`${styles.conversation} h-full space-y-7 overflow-y-auto overscroll-contain px-5 pb-6 pt-6 sm:px-7`} role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation messages">
+          <div ref={scrollArea} onTouchStart={() => { touching.current = true; }} onTouchEnd={() => { touching.current = false; }} onTouchCancel={() => { touching.current = false; }} onWheel={(event) => { if (event.deltaY < 0) { nearBottom.current = false; setShowLatest(true); } }} onScroll={(event) => { const target = event.currentTarget; nearBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight < (touching.current ? 8 : 100); setShowLatest(!nearBottom.current); }} className={`${styles.conversation} h-full space-y-7 overflow-y-auto overscroll-contain px-5 pb-6 pt-6 sm:px-7`} role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation messages">
             {loading && !conversation ? <AssistantThinking label="Opening your conversation…" /> : !messages.length && <div className="flex min-h-72 flex-col justify-center py-7 sm:min-h-80">
               <p className="mb-4 text-xs font-medium tracking-wide text-muted-foreground">A little help in the kitchen</p>
               <h2 className="text-[28px] font-semibold tracking-[-.045em]">What sounds good?</h2><p className="mt-3 max-w-[340px] text-sm leading-6 text-muted-foreground">Paste a recipe link, text or photo to save it. Or ask for ideas, swaps and plans.</p>
@@ -237,7 +240,7 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
                 {photo.status === "error" && <span title={photo.error} className="absolute inset-0 flex items-center justify-center rounded-xl bg-destructive/70"><AlertCircle className="size-5 text-white" /></span>}
                 <button type="button" aria-label={`Remove photo ${index + 1}`} onClick={() => photos.remove(photo.key)} className="absolute -right-1.5 -top-1.5 flex size-6 items-center justify-center rounded-full bg-foreground text-background shadow ring-2 ring-background"><X className="size-3.5" /></button>
               </li>)}</ul>}
-              <Textarea id="sift-composer" ref={composer} aria-label="Message Sift" disabled={!conversation && !loading} value={input} onChange={(event) => setInput(event.target.value)} maxLength={8000} rows={2} placeholder={photos.photos.length ? "Add a note, or just send…" : "Ask Sift, or paste a recipe…"} onPaste={(event) => { const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/")); if (files.length) { event.preventDefault(); attach(files); } }} className="max-h-40 min-h-[68px] resize-none rounded-none border-0 bg-transparent px-3 py-3 text-base leading-6 shadow-none focus-visible:ring-0 sm:text-sm dark:bg-transparent" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} />
+              <Textarea id="sift-composer" ref={composer} aria-label="Message Sift" disabled={!conversation && !loading} value={input} onChange={(event) => { if (!isSentEcho(input, event.target.value, lastSent.current)) setInput(event.target.value); }} maxLength={8000} rows={2} placeholder={photos.photos.length ? "Add a note, or just send…" : "Ask Sift, or paste a recipe…"} onPaste={(event) => { const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/")); if (files.length) { event.preventDefault(); attach(files); } }} className="max-h-40 min-h-[68px] resize-none rounded-none border-0 bg-transparent px-3 py-3 text-base leading-6 shadow-none focus-visible:ring-0 sm:text-sm dark:bg-transparent" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} />
               <div className="flex min-h-11 items-center justify-between gap-1"><div className="min-w-0 flex-1">{conversation && <ModelSelector conversation={conversation} disabled={busy || pendingApproval} onBusy={setActionBusy} onChanged={(saved) => { setMessages(saved.messages as SiftUIMessage[]); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); onConversationChanged(saved); }} />}</div><div className="flex shrink-0 items-center gap-0.5"><MicrophoneSettings disabled={loading || !conversation} voiceBusy={voice.busy} onEndVoice={voice.endForAudioSettings} /><input ref={photoInput} type="file" accept="image/*" multiple hidden onChange={(event) => { attach(Array.from(event.target.files ?? [])); event.target.value = ""; }} /><Button type="button" variant="ghost" size="icon" aria-label="Attach photos" title="Attach photos" disabled={!conversation || photos.photos.length >= maxChatPhotos} onClick={() => photoInput.current?.click()} className="rounded-full text-muted-foreground"><ImagePlus className="size-[18px]" /></Button><Button type="button" variant="ghost" size="icon" aria-label="Talk to Sift" title="Live voice conversation (ElevenLabs, billed)" disabled={busy || pendingApproval || !conversation || dictation.listening} onClick={() => void voice.start()} className="rounded-full text-muted-foreground"><AudioLines className="size-[18px]" /></Button><Button type="button" variant="ghost" size="icon" aria-label={dictation.listening ? "Stop dictation" : "Dictate message"} aria-pressed={dictation.listening} title={dictation.listening ? "Stop dictation" : "Dictate (free)"} disabled={loading || !conversation} onClick={() => {
                 if (dictation.listening) { dictation.stop(); return; }
                 // Without the Web Speech API (e.g. some home-screen apps), the

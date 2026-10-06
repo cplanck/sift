@@ -72,7 +72,8 @@ test("persistent Sift panel, real conversation CRUD, current recipe context, and
   await page.getByRole("menuitem", { name: "Rename conversation", exact: true }).click();
   await panel.getByLabel("Conversation title", { exact: true }).fill("Dinner ideas");
   await panel.getByRole("button", { name: "Save title", exact: true }).click();
-  expect((await (await page.request.get(`/api/conversations/${conversationId}`)).json()).title).toBe("Dinner ideas");
+  // Renames show immediately; the save completes in the background.
+  await expect.poll(async () => (await (await page.request.get(`/api/conversations/${conversationId}`)).json()).title).toBe("Dinner ideas");
   await panel.getByRole("button", { name: "New conversation", exact: true }).click();
   await expect(panel.getByRole("textbox", { name: "Message Sift", exact: true })).toHaveValue("");
   await panel.getByRole("button", { name: "Conversation history", exact: true }).click();

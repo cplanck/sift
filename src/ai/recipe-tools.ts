@@ -17,7 +17,7 @@ import { attachChatPhoto, listRecipePhotos, setCoverPhoto } from "@/services/pho
 import { consumeLimit } from "@/services/rate-limit";
 import { createRecipeShare, listRecipeShares, revokeRecipeShare } from "@/services/shares";
 import { assertConversationRun, runToolMutation } from "@/services/conversations";
-import { addCookingSessionNote, finishCookingSession, getCookingSession, listActiveCookingSessions, listCookingHistory, startCookingSession, updateCookingProgress } from "@/services/cooking";
+import { addCookingSessionNote, finishCookingSession, getCookingSession, getRecipeLearnings, listActiveCookingSessions, listCookingHistory, startCookingSession, updateCookingProgress } from "@/services/cooking";
 import {
   addRecipeNote, createRecipe, getRecipe, listRecipeNotes, listRecipes,
   listVersions, restoreVersion, setFavorite, setRecipeStatus, updateRecipe,
@@ -126,9 +126,13 @@ export function createRecipeTools(db: Database, actor: Actor, run: Run) {
       }),
     }),
     getRecipe: tool({
-      description: "Read the exact current canonical content and version of an authorized recipe. Raw imported source text is not returned. Use this before any canonical edit.",
+      description: "Read the exact current canonical content and version of an authorized recipe, plus what past cooks taught: its newest notes and the last few cooks' ratings, summaries and notes. Raw imported source text is not returned. Use this before any canonical edit.",
       inputSchema: recipeIdSchema,
-      execute: async ({ recipeId }) => safely(async () => { await authorize(); return recipeData(await getRecipe(db, actor, recipeId)); }),
+      execute: async ({ recipeId }) => safely(async () => {
+        await authorize();
+        const [recipe, learnings] = await Promise.all([getRecipe(db, actor, recipeId), getRecipeLearnings(db, actor, recipeId)]);
+        return { ...recipeData(recipe), learnings };
+      }),
     }),
     createRecipe: tool({
       description: "Save a new recipe with complete ingredients and instructions. For a recipe from a web page pass its sourceUrl; for one transcribed from a photo or pasted text pass from: 'photo' or 'text' (and sourceName when the recipe names its author, book or site) so the original is credited. Existing imported drafts are saved with approveImportDraft instead.",

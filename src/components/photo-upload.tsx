@@ -17,22 +17,37 @@ export async function resizePhoto(file: File) {
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Your browser couldn’t prepare this photo. Try another browser.");
     context.fillStyle = "#ffffff"; context.fillRect(0, 0, canvas.width, canvas.height); context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Couldn’t prepare this photo.")), "image/jpeg", 0.88));
-    if (blob.size > 8 * 1024 * 1024) throw new Error("The prepared photo is too large. Try a smaller image.");
-    return blob;
+    // Uploads pass through Sift's server, which accepts up to ~4 MB per request.
+    for (const quality of [0.88, 0.78, 0.65, 0.5]) {
+      const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Couldn’t prepare this photo.")), "image/jpeg", quality));
+      if (blob.size <= 3.8 * 1024 * 1024) return blob;
+    }
+    throw new Error("This photo is too detailed to upload. Try a smaller image.");
   } finally { bitmap.close(); }
 }
 
-export function putPhoto(url: string, blob: Blob, onProgress: (value: number) => void) {
+function putPhoto(url: string, blob: Blob, onProgress: (value: number) => void) {
   return new Promise<void>((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("PUT", url); request.setRequestHeader("Content-Type", blob.type); request.timeout = 120_000;
     request.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.round(event.loaded / event.total * 100)); };
-    request.onload = () => request.status >= 200 && request.status < 300 ? resolve() : reject(new Error("Photo upload failed. Try again; if it continues, check the R2 bucket’s CORS configuration."));
-    request.onerror = () => reject(new Error("The photo couldn’t reach storage. Check your connection and the R2 bucket’s CORS configuration, then try again."));
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) return resolve();
+      let message = "Photo upload failed. Please try again.";
+      try { const data = JSON.parse(request.responseText); if (typeof data?.error === "string") message = data.error; } catch { /* Keep the general message. */ }
+      reject(new Error(message));
+    };
+    request.onerror = () => reject(new Error("The photo couldn’t be uploaded. Check your connection and try again."));
     request.ontimeout = () => reject(new Error("Photo upload timed out. Check your connection and try again."));
     request.send(blob);
   });
+}
+
+/** Reserves, uploads (through Sift, same origin) and finalizes one prepared photo. */
+export async function uploadPhoto(blob: Blob, target: { purpose: "recipe" | "import" | "cooking" | "chat"; recipeId?: string; sessionId?: string }, onProgress: (value: number) => void) {
+  const upload = await api<{ id: string }>("/api/photos/uploads", { body: { ...target, contentType: blob.type, byteSize: blob.size } });
+  await putPhoto(`/api/photos/${upload.id}/content`, blob, onProgress);
+  return upload.id;
 }
 
 export function PhotoUpload({ recipeId, sessionId, purpose, onUploaded }: { recipeId?: string; sessionId?: string; purpose: "recipe" | "import" | "cooking"; onUploaded: (id: string) => void | Promise<void> }) {
@@ -49,11 +64,9 @@ export function PhotoUpload({ recipeId, sessionId, purpose, onUploaded }: { reci
           const suffix = selected.length > 1 ? ` (${index + 1} of ${selected.length})` : "";
           setStage(`Preparing photo${suffix}`); setProgress(0);
           const blob = await resizePhoto(file);
-          const upload = await api<{ id: string; url: string }>("/api/photos/uploads", { body: { purpose, ...(recipeId ? { recipeId } : {}), ...(sessionId ? { sessionId } : {}), contentType: blob.type, byteSize: blob.size } });
-          setStage(`Uploading photo${suffix}`); await putPhoto(upload.url, blob, setProgress);
-          setStage(`Finishing photo${suffix}`);
-          await api(`/api/photos/${upload.id}/complete`, { method: "POST" });
-          await onUploaded(upload.id);
+          setStage(`Uploading photo${suffix}`);
+          const id = await uploadPhoto(blob, { purpose, ...(recipeId ? { recipeId } : {}), ...(sessionId ? { sessionId } : {}) }, (value) => { setProgress(value); if (value >= 100) setStage(`Finishing photo${suffix}`); });
+          await onUploaded(id);
           setFiles((remaining) => remaining.filter((item) => item !== file));
         }
         setStage(purpose === "import" ? "Photo uploaded." : "Photos added.");

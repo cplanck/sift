@@ -8,8 +8,8 @@ import { beginConversationTurn, createConversation, getConversation } from "@/se
 import { attachChatPhoto } from "@/services/photos";
 import { isAppPath, mergeLabels } from "@/ai/recipe-tools";
 import { clearCheckedGroceryItems, createArtifact, deleteArtifact, getArtifact, listArtifacts, renameArtifact, setGroceryItemChecked, updateGroceryItem, updateMealPlanEntry } from "@/services/artifacts";
-import { listActiveCookingSessions, startCookingSession } from "@/services/cooking";
-import { createRecipe, getRecipe } from "@/services/recipes";
+import { addCookingSessionNote, finishCookingSession, getCookingSession, getRecipeLearnings, listActiveCookingSessions, startCookingSession } from "@/services/cooking";
+import { addRecipeNote, createRecipe, getRecipe } from "@/services/recipes";
 import { ensurePersonalWorkspace, type Actor } from "@/services/workspaces";
 import { testDatabaseUrl } from "./database";
 
@@ -120,5 +120,20 @@ describe("chat photos", () => {
     const cookPhoto = await photo(actorA);
     expect(await attachChatPhoto(db, actorA, cookPhoto, { sessionId: session.id })).toMatchObject({ sessionId: session.id, recipeId: recipe.id });
     await expect(attachChatPhoto(db, actorB, await photo(actorA), { recipeId: recipe.id })).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("learning from past cooks", () => {
+  it("bundles the newest recipe notes and finished cooks with their notes", async () => {
+    const recipe = await createRecipe(db, actorA, { content: { ...content, title: "Learning soup" }, source: { type: "manual" }, status: "active" });
+    await addRecipeNote(db, actorA, recipe.id, { body: "Needs more salt than written." });
+    const first = await startCookingSession(db, actorA, { recipeId: recipe.id, expectedVersionId: recipe.version.id });
+    await addCookingSessionNote(db, actorA, first.id, { body: "Burned the leeks on high heat." });
+    await finishCookingSession(db, actorA, first.id, { expectedRevision: (await getCookingSession(db, actorA, first.id)).revision, status: "completed", rating: 3, summary: "Good, but watch the heat." });
+    await startCookingSession(db, actorA, { recipeId: recipe.id, expectedVersionId: recipe.version.id });
+    const learnings = await getRecipeLearnings(db, actorA, recipe.id);
+    expect(learnings).toMatchObject({ totalNotes: 1, totalPastCooks: 1, notes: [{ body: "Needs more salt than written." }] });
+    expect(learnings.pastCooks).toEqual([expect.objectContaining({ sessionId: first.id, status: "completed", rating: 3, summary: "Good, but watch the heat.", notes: ["Burned the leeks on high heat."] })]);
+    await expect(getRecipeLearnings(db, actorB, recipe.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });
