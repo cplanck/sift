@@ -5,19 +5,48 @@ import { api } from "@/lib/client-http";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
+/**
+ * Copies a picked photo into memory. Files picked from the macOS Photos library
+ * (or iCloud) can stop being readable later, and Chrome reports that only as
+ * ERR_ACCESS_DENIED; reading at pick time keeps the bytes and explains failures.
+ */
+export async function snapshotPhoto(file: File) {
+  try { return new File([await file.arrayBuffer()], file.name, { type: file.type, lastModified: file.lastModified }); }
+  catch {
+    throw new Error("Your browser wasn’t allowed to read this photo. If you picked it from the Photos library, drag it to your desktop first and choose it from there, or allow your browser to access Photos in System Settings → Privacy & Security.");
+  }
+}
+
 type Decoded = { source: CanvasImageSource; width: number; height: number; release: () => void };
+const fromBitmap = (bitmap: ImageBitmap): Decoded => ({ source: bitmap, width: bitmap.width, height: bitmap.height, release: () => bitmap.close() });
+
+/** What the file actually contains, from its first bytes; names and types can lie. */
+async function sniffPhoto(file: File) {
+  const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+  const text = String.fromCharCode(...head.slice(4, 12));
+  if (head[0] === 0xff && head[1] === 0xd8) return "JPEG";
+  if (text.startsWith("ftyp") && /^(heic|heix|hevc|hevx|heim|heis|mif1|msf1)$/.test(text.slice(4))) return "HEIC";
+  if (text.startsWith("ftyp")) return text.slice(4).trim().toUpperCase() || "HEIF";
+  if (head[0] === 0x89 && text.startsWith("\r\n")) return "PNG";
+  return null;
+}
 
 /**
- * Opens a photo for resizing. createImageBitmap is fastest, but Safari on iPhone
- * can refuse very large camera photos (24–48 MP) that its regular image loader
- * opens fine, so fall back to an <img> before giving up.
+ * Opens a photo for resizing. createImageBitmap is fastest; Safari on iPhone can
+ * refuse very large camera photos that an <img> opens fine; and Chrome or
+ * Firefox can't read HEIC at all (macOS can hand them HEIC named ".jpeg"), so
+ * HEIC falls back to a decoder that downloads only when it's needed.
  */
 async function decodePhoto(file: File): Promise<Decoded> {
+  const format = await sniffPhoto(file).catch(() => null);
   if (typeof createImageBitmap === "function") {
+    try { return fromBitmap(await createImageBitmap(file)); } catch { /* Try the fallbacks below. */ }
+  }
+  if (format === "HEIC") {
     try {
-      const bitmap = await createImageBitmap(file);
-      return { source: bitmap, width: bitmap.width, height: bitmap.height, release: () => bitmap.close() };
-    } catch { /* Try the image element below. */ }
+      const { heicTo } = await import("heic-to/next");
+      return fromBitmap(await heicTo({ blob: file, type: "bitmap" }));
+    } catch { throw new Error("This HEIC photo couldn’t be converted. Try exporting it as a JPEG, or take a screenshot of it."); }
   }
   const url = URL.createObjectURL(file);
   try {
@@ -28,7 +57,7 @@ async function decodePhoto(file: File): Promise<Decoded> {
     return { source: image, width: image.naturalWidth, height: image.naturalHeight, release: () => URL.revokeObjectURL(url) };
   } catch {
     URL.revokeObjectURL(url);
-    throw new Error("This photo couldn’t be opened. Try taking a screenshot of it, or choose another photo.");
+    throw new Error(`This photo${format ? ` (${format})` : ""} couldn’t be opened in this browser. Try taking a screenshot of it, or choose another photo.`);
   }
 }
 
@@ -36,7 +65,7 @@ export async function resizePhoto(file: File) {
   // Any image the browser can decode (including iPhone HEIC in Safari) is re-encoded as JPEG.
   if (file.type && !file.type.startsWith("image/")) throw new Error("Choose a photo.");
   if (file.size > 30 * 1024 * 1024) throw new Error("Choose a photo smaller than 30 MB.");
-  const photo = await decodePhoto(file);
+  const photo = await decodePhoto(await snapshotPhoto(file));
   try {
     const ratio = Math.min(1, 2048 / Math.max(photo.width, photo.height));
     const canvas = document.createElement("canvas");
@@ -82,7 +111,7 @@ export function PhotoUpload({ recipeId, sessionId, purpose, onUploaded }: { reci
   const [files, setFiles] = useState<File[]>([]), [busy, setBusy] = useState(false), [error, setError] = useState(""), [stage, setStage] = useState(""), [progress, setProgress] = useState(0);
   return <div className="space-y-4 rounded-2xl border border-dashed p-5 sm:p-6">
     <div><label htmlFor={inputId} className="text-sm font-medium">{purpose === "import" ? "Recipe photo" : purpose === "cooking" ? "Add cook photos" : "Add recipe photos"}</label><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{purpose === "import" ? "A clear photo of a recipe page or handwritten card. You’ll review the extracted recipe before saving." : purpose === "cooking" ? "Photos stay with this cook, separate from your recipe’s photos." : "Keep photos of the finished dish here. Choose a cover for your Library."} Any photo up to 30 MB.</p></div>
-    <Input id={inputId} type="file" accept="image/jpeg,image/png,image/webp" multiple={purpose !== "import"} disabled={busy} className="h-auto min-h-11 py-2 file:mr-3 file:text-sm" onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); setError(""); setStage(""); }} />
+    <Input id={inputId} type="file" accept="image/*" multiple={purpose !== "import"} disabled={busy} className="h-auto min-h-11 py-2 file:mr-3 file:text-sm" onChange={(event) => { const picked = Array.from(event.target.files ?? []); setFiles([]); void Promise.all(picked.map(snapshotPhoto)).then(setFiles, (error: unknown) => setError(error instanceof Error ? error.message : "Couldn’t read this photo.")); setError(""); setStage(""); }} />
     <Button disabled={busy || !files.length} onClick={async () => {
       setBusy(true); setError("");
       const selected = [...files];
