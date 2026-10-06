@@ -71,4 +71,13 @@ describe("Safe ElevenLabs client error classification", () => {
       expect(failure.message).not.toMatch(/microphone|playback|private|secret/);
     }
   });
+
+  it("recognizes an exhausted ElevenLabs balance without echoing provider text", () => {
+    const init = classifyVoiceError({ errorType: "call_initialization_error", code: 3000 }, "Server error: [quota_exceeded] You've run out of credits. private");
+    expect(init.diagnostic.category).toBe("voice_credits");
+    expect(init.message).toContain("out of voice credits");
+    expect(init.message).not.toContain("private");
+    expect(classifyVoiceError({ errorType: "dependency_error" }, "This request exceeds your quota limit.").diagnostic.category).toBe("voice_credits");
+    expect(classifyVoiceError({ errorType: "call_initialization_error" }).diagnostic.category).toBe("voice_reply");
+  });
 });

@@ -5,8 +5,9 @@ import { api } from "@/lib/client-http";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
-async function resizePhoto(file: File) {
-  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) throw new Error("Choose a JPEG, PNG, or WebP photo.");
+export async function resizePhoto(file: File) {
+  // Any image the browser can decode (including iPhone HEIC in Safari) is re-encoded as JPEG.
+  if (file.type && !file.type.startsWith("image/")) throw new Error("Choose a photo.");
   if (file.size > 30 * 1024 * 1024) throw new Error("Choose a photo smaller than 30 MB.");
   const bitmap = await createImageBitmap(file).catch(() => { throw new Error("This photo couldn’t be opened. Try another JPEG, PNG, or WebP."); });
   try {
@@ -22,7 +23,7 @@ async function resizePhoto(file: File) {
   } finally { bitmap.close(); }
 }
 
-function putPhoto(url: string, blob: Blob, onProgress: (value: number) => void) {
+export function putPhoto(url: string, blob: Blob, onProgress: (value: number) => void) {
   return new Promise<void>((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open("PUT", url); request.setRequestHeader("Content-Type", blob.type); request.timeout = 120_000;

@@ -1,6 +1,7 @@
 /* Cache only public static assets. Authenticated pages and APIs are never cached. */
-const CACHE = "sift-static-v3";
-const SHELL = ["/offline.html", "/offline.js", "/offline.css", "/icons/icon-192.png", "/icons/icon-512.png"];
+const CACHE = "sift-static-v4";
+// Icons use their full versioned request URL in the asset cache below.
+const SHELL = ["/offline.html", "/offline.js", "/offline.css"];
 self.addEventListener("install", (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL))));
 self.addEventListener("activate", (event) => event.waitUntil(Promise.all([
   caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith("sift-static-") && key !== CACHE).map((key) => caches.delete(key)))),

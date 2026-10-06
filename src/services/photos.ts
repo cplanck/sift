@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 import sharp from "sharp";
 import { z } from "zod";
-import type { Database } from "@/db/connection";
+import type { Database, Executor } from "@/db/connection";
 import { photos, recipes } from "@/db/schema";
 import { DomainError } from "@/domain/errors";
 import { deletePhotoObject, MAX_PHOTO_BYTES, r2, readPhotoObject, signPhotoUpload, writePhotoObject } from "@/lib/r2";
@@ -12,7 +12,7 @@ import { consumeLimit } from "./rate-limit";
 import { assertCookingSessionOwner } from "./cooking";
 
 const uploadSchema = z.object({
-  recipeId: z.uuid().optional(), sessionId: z.uuid().optional(), purpose: z.enum(["recipe", "import", "cooking"]),
+  recipeId: z.uuid().optional(), sessionId: z.uuid().optional(), purpose: z.enum(["recipe", "import", "cooking", "chat"]),
   contentType: z.enum(["image/jpeg", "image/png", "image/webp"]), byteSize: z.number().int().positive().max(MAX_PHOTO_BYTES),
 }).strict().refine((data) => data.purpose === "recipe" ? !!data.recipeId && !data.sessionId : data.purpose === "cooking" ? !!data.sessionId && !data.recipeId : !data.recipeId && !data.sessionId, "Choose a recipe or cooking session appropriate to this photo.");
 
@@ -80,6 +80,33 @@ export async function finishPhotoUpload(db: Database, actor: Actor, id: string) 
   }
   await deletePhotoObject(photo.objectKey).catch(() => { /* R2 lifecycle removes abandoned temporary uploads. */ });
   return { id: photo.id };
+}
+
+/** Photos sent in chat belong to their uploader until moved onto a recipe or cook. */
+export async function assertChatPhoto(db: Executor, actor: Actor, id: string) {
+  await assertMembership(db, actor);
+  if (!z.uuid().safeParse(id).success) throw new DomainError("NOT_FOUND", "Photo not found.");
+  const [photo] = await db.select().from(photos).where(and(eq(photos.id, id), eq(photos.workspaceId, actor.workspaceId)));
+  if (!photo || photo.createdByUserId !== actor.userId || photo.status !== "ready" || !["chat", "recipe", "cooking"].includes(photo.purpose)) throw new DomainError("NOT_FOUND", "That photo isn’t available. Attach it again.");
+  return photo;
+}
+
+/** Moves a chat photo onto a recipe (optionally as its cover) or onto the user's own cook. */
+export async function attachChatPhoto(db: Database, actor: Actor, id: string, target: { recipeId: string; makeCover?: boolean } | { sessionId: string }) {
+  return db.transaction(async (tx) => {
+    const photo = await assertChatPhoto(tx, actor, id);
+    if (photo.purpose !== "chat") throw new DomainError("INVALID_INPUT", "This photo is already attached to a recipe or cook.");
+    if ("sessionId" in target) {
+      const session = await assertCookingSessionOwner(tx, actor, target.sessionId);
+      await tx.update(photos).set({ purpose: "cooking", sessionId: session.id, recipeId: session.recipeId }).where(eq(photos.id, photo.id));
+      return { photoId: photo.id, sessionId: session.id, recipeId: session.recipeId };
+    }
+    const recipe = await getRecipe(tx, actor, target.recipeId);
+    await tx.update(photos).set({ purpose: "recipe", recipeId: recipe.id }).where(eq(photos.id, photo.id));
+    const cover = target.makeCover || !recipe.coverPhotoId;
+    if (cover) await tx.update(recipes).set({ coverPhotoId: photo.id, updatedAt: new Date(), updatedByUserId: actor.userId }).where(and(eq(recipes.id, recipe.id), eq(recipes.workspaceId, actor.workspaceId)));
+    return { photoId: photo.id, recipeId: recipe.id, title: recipe.version.content.title, cover };
+  });
 }
 
 export async function listRecipePhotos(db: Database, actor: Actor, recipeId: string) {

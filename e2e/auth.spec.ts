@@ -9,7 +9,7 @@ test("sign up, personal workspace, sign out and sign in", async ({ page }) => {
   await page.getByLabel("Email", { exact: true }).fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Create cookbook", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Hello, Alex." })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Search recipes", exact: true })).toBeVisible();
   const me = await (await page.request.get("/api/me?workspaceId=ignored-client-value")).json();
   expect(me.workspace.personalForUserId).toBe(me.userId);
   expect(me.workspaceId).toBe(me.workspace.id);
@@ -22,6 +22,6 @@ test("sign up, personal workspace, sign out and sign in", async ({ page }) => {
   await page.getByLabel("Email", { exact: true }).fill(email);
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Hello, Alex." })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Search recipes", exact: true })).toBeVisible();
   expect((await (await page.request.get("/api/me")).json()).workspaceId).toBe(me.workspaceId);
 });

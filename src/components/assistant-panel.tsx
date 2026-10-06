@@ -3,16 +3,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
-import { ArrowDown, ArrowUp, BookOpen, CalendarDays, ChevronDown, Check, History, ListChecks, LoaderCircle, Mic, MoreHorizontal, Pencil, PhoneOff, Plus, ReceiptText, RefreshCw, Settings2, SlidersHorizontal, Square, Trash2, X } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, AudioLines, ImagePlus, BookOpen, CalendarDays, ChevronDown, Check, History, ListChecks, LoaderCircle, Mic, MoreHorizontal, Pencil, PhoneOff, Plus, ReceiptText, RefreshCw, Settings2, SlidersHorizontal, Square, Trash2, X } from "lucide-react";
 import type { SiftUIMessage } from "@/ai/assistant-runtime";
 import type { ClientPageContext } from "@/domain/assistant";
 import { api } from "@/lib/client-http";
 import type { Conversation, ConversationList } from "./assistant-shell";
 import { AssistantMessage } from "./assistant-message";
-import { AssistantThinking } from "./assistant-thinking";
+import { AssistantActivity, AssistantThinking } from "./assistant-thinking";
 import { AssistantDetails } from "./assistant-details";
 import { ModelSelector } from "./model-selector";
 import type { SiftVoice } from "./use-voice-session";
+import { useDictation } from "./use-dictation";
+import { maxChatPhotos, useChatPhotos } from "./use-chat-photos";
+import Image from "next/image";
 import { VoiceIndicator, VoiceLauncher, voiceLabels } from "./voice-launcher";
 import { AiUsageDetails } from "./ai-usage-details";
 import styles from "./assistant-panel.module.css";
@@ -28,20 +31,31 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 
+// Tool results that change what the current page shows, or move to another page.
+const pageEffects = new Set(["createGroceryList", "deriveGroceryList", "addGroceryItems", "removeGroceryItem", "setGroceryItemChecked", "updateGroceryItem", "clearCheckedGroceryItems", "createMealPlan", "addMealPlanEntry", "removeMealPlanEntry", "updateMealPlanEntry", "renameArtifact", "deleteArtifact",
+  "startCookingSession", "updateCookingProgress", "finishCookingSession", "abandonCookingSession", "addCookingSessionNote", "createRecipe", "updateRecipe", "archiveRecipe", "restoreArchivedRecipe", "restoreRecipeVersion", "addRecipeNote", "setRecipeFavorite",
+  "setRecipeFavorites", "tagRecipes", "setRecipeCoverPhoto", "addPhotoToRecipe", "addPhotoToCook", "importRecipe", "approveImportDraft", "createShareLink", "revokeShareLink", "navigate"].map((name) => `tool-${name}`));
+
 type Props = {
   open: boolean; onOpenChange: (value: boolean) => void; conversation: Conversation | null; history: ConversationList; loading: boolean; loadError: string; pageLabel: string; getPageContext: () => ClientPageContext;
   onSettings: () => void; onNew: () => Promise<void>; onLoad: (id: string) => Promise<void>; onHistory: () => Promise<ConversationList>; onConversationChanged: (conversation: Conversation | null) => void;
   voice: SiftVoice; onVoiceDetails: () => void; subscribeVoiceConversation: (listener: (saved: Conversation) => void) => () => void;
+  /** Owned by the shell so a draft typed while loading survives this panel remounting per conversation. */
+  input: string; onInputChange: (value: string) => void;
 };
 
-export function AssistantPanel({ open, onOpenChange, conversation, history, loading, loadError, pageLabel, getPageContext, onSettings, onNew, onLoad, onHistory, onConversationChanged, voice, onVoiceDetails, subscribeVoiceConversation }: Props) {
+export function AssistantPanel({ open, onOpenChange, conversation, history, loading, loadError, pageLabel, getPageContext, onSettings, onNew, onLoad, onHistory, onConversationChanged, voice, onVoiceDetails, subscribeVoiceConversation, input, onInputChange: setInput }: Props) {
   const router = useRouter();
-  const [input, setInput] = useState(""), [action, setAction] = useState<"rename" | "delete" | null>(null), [actionError, setActionError] = useState(""), [actionBusy, setActionBusy] = useState(false), [savedError, setSavedError] = useState(conversation?.lastError ?? ""), [serverBusy, setServerBusy] = useState(conversation?.busy ?? false), [reloading, setReloading] = useState(false);
+  const [action, setAction] = useState<"rename" | "delete" | null>(null), [actionError, setActionError] = useState(""), [actionBusy, setActionBusy] = useState(false), [savedError, setSavedError] = useState(conversation?.lastError ?? ""), [serverBusy, setServerBusy] = useState(conversation?.busy ?? false), [reloading, setReloading] = useState(false);
   const [clientError, setClientError] = useState("");
   const [showLatest, setShowLatest] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false), [historyLoading, setHistoryLoading] = useState(false);
   const scrollArea = useRef<HTMLDivElement>(null), nearBottom = useRef(true), submitted = useRef<{ id: string; text: string } | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const dictation = useDictation(setInput), [keyboardHint, setKeyboardHint] = useState(false);
+  const photos = useChatPhotos(), [sendingPhotos, setSendingPhotos] = useState(false), [photoNotice, setPhotoNotice] = useState("");
+  const photoInput = useRef<HTMLInputElement>(null);
+  const attach = (files: File[]) => { setPhotoNotice(photos.add(files) ? `Up to ${maxChatPhotos} photos per message.` : ""); };
   const renderedMutations = useRef(new Set((conversation?.messages ?? []).flatMap((message) => message.parts.filter(isToolUIPart).map((part) => part.toolCallId))));
   const transport = useMemo(() => new DefaultChatTransport<SiftUIMessage>({
     api: "/api/assistant",
@@ -55,20 +69,30 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
       if (body?.approval) return { body: { ...common, approval: body.approval } };
       const message = messages.findLast((message) => message.role === "user");
       if (!message) throw new Error("Write a message to Sift first.");
-      return { body: { ...common, message: { id: message.id, text: message.parts.filter((part) => part.type === "text").map((part) => part.text).join("\n") } } };
+      const photoIds = message.parts.flatMap((part) => part.type === "file" ? part.url.match(/^\/api\/photos\/([0-9a-f-]{36})$/i)?.[1] ?? [] : []);
+      return { body: { ...common, message: { id: message.id, text: message.parts.filter((part) => part.type === "text").map((part) => part.text).join("\n"), photoIds } } };
     },
   }), [getPageContext]);
   const { messages, status, error, sendMessage, setMessages, clearError, addToolApprovalResponse, stop } = useChat<SiftUIMessage>({
     id: conversation?.id ?? "not-started", messages: (conversation?.messages ?? []) as SiftUIMessage[], transport, generateId: () => crypto.randomUUID(),
+    // Batch stream deltas into ~20 renders/s; Markdown re-parses per render.
+    throttle: 50,
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     onError: (error) => { setClientError(error.message); void reloadSaved(); },
     onFinish: () => {
       router.refresh(); void onHistory().catch(() => undefined);
+      if (window.matchMedia("(min-width: 640px)").matches) composer.current?.focus();
       if (conversation) void api<Conversation>(`/api/conversations/${conversation.id}`).then((saved) => { onConversationChanged(saved); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); }).catch(() => undefined);
     },
   });
   const streaming = status === "submitted" || status === "streaming", busy = streaming || serverBusy || loading || actionBusy || reloading || voice.busy;
   const voiceVisible = voice.busy || !!voice.error || !!voice.notice;
+  // Messages present when this conversation opened render in place; only
+  // ones added afterwards animate in.
+  const [initialIds] = useState(() => new Set((conversation?.messages ?? []).map((message) => message.id)));
+  const closePanel = useCallback(() => onOpenChange(false), [onOpenChange]);
+  const approveRef = useRef<(id: string, approved: boolean) => Promise<void>>(async () => undefined);
+  const onApproval = useCallback((id: string, approved: boolean) => { void approveRef.current(id, approved); }, []);
   const pendingApproval = messages.some((message) => message.parts.some((part) => isToolUIPart(part) && part.state === "approval-requested" && !part.approval.isAutomatic));
   const liveArtifactReceipts = useMemo(() => {
     const latest = new Map<string, string>();
@@ -90,7 +114,7 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
       submitted.current = null; clearError(); router.refresh();
     } catch (error) { setActionError(error instanceof Error ? error.message : "Couldn’t load the saved conversation."); }
     finally { setReloading(false); }
-  }, [conversation, setMessages, clearError, router, onConversationChanged]);
+  }, [conversation, setMessages, clearError, router, onConversationChanged, setInput]);
   useEffect(() => subscribeVoiceConversation((saved) => {
     if (saved.id !== conversation?.id) return;
     setMessages(saved.messages as SiftUIMessage[]); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); clearError(); setClientError("");
@@ -102,36 +126,55 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
   }, [serverBusy, streaming, reloadSaved]);
   useEffect(() => { if (nearBottom.current) scrollArea.current?.scrollTo({ top: messages.length ? scrollArea.current.scrollHeight : 0, behavior: "instant" }); }, [messages, streaming, open]);
   useEffect(() => {
-    let changed = false;
+    let changed = false, navigateTo: string | null = null;
     for (const message of messages) for (const part of message.parts) {
-      if (!isToolUIPart(part) || part.state !== "output-available" || !["tool-createGroceryList", "tool-deriveGroceryList", "tool-addGroceryItems", "tool-removeGroceryItem", "tool-setGroceryItemChecked", "tool-createMealPlan", "tool-addMealPlanEntry", "tool-removeMealPlanEntry", "tool-startCookingSession", "tool-updateCookingProgress", "tool-finishCookingSession", "tool-abandonCookingSession", "tool-addCookingSessionNote", "tool-createRecipe", "tool-updateRecipe", "tool-archiveRecipe", "tool-restoreArchivedRecipe", "tool-restoreRecipeVersion", "tool-addRecipeNote", "tool-setRecipeFavorite"].includes(part.type) || renderedMutations.current.has(part.toolCallId)) continue;
+      if (!isToolUIPart(part) || part.state !== "output-available" || !pageEffects.has(part.type) || renderedMutations.current.has(part.toolCallId)) continue;
       renderedMutations.current.add(part.toolCallId);
       if (part.output && typeof part.output === "object" && "ok" in part.output && part.output.ok === true) {
+        if (part.type === "tool-navigate" && "href" in part.output && typeof part.output.href === "string") {
+          // The agent opened a page for the user. On a phone the sheet covers it.
+          navigateTo = part.output.href;
+          continue;
+        }
         changed = true;
-        if ("artifactId" in part.output && typeof part.output.artifactId === "string") window.dispatchEvent(new CustomEvent(ARTIFACT_CHANGED, { detail: { id: part.output.artifactId } }));
+        if ("artifactId" in part.output && typeof part.output.artifactId === "string") {
+          if (part.type === "tool-deleteArtifact" && window.location.pathname === `/artifacts/${part.output.artifactId}`) navigateTo = "/library";
+          else window.dispatchEvent(new CustomEvent(ARTIFACT_CHANGED, { detail: { id: part.output.artifactId } }));
+        }
       }
     }
-    if (changed) router.refresh();
-  }, [messages, router]);
+    if (navigateTo) { router.push(navigateTo); if (!window.matchMedia("(min-width: 640px)").matches) onOpenChange(false); }
+    else if (changed) router.refresh();
+  }, [messages, router, onOpenChange]);
   async function submit() {
-    const text = input.trim(); if (!text || busy || pendingApproval || !conversation) return;
-    const id = crypto.randomUUID(); submitted.current = { id, text }; setInput(""); setSavedError(""); setClientError(""); setActionError(""); clearError(); nearBottom.current = true;
-    await sendMessage({ id, role: "user", parts: [{ type: "text", text }] });
+    const text = input.trim(); if ((!text && !photos.photos.length) || busy || pendingApproval || !conversation || sendingPhotos) return;
+    dictation.stop();
+    let photoIds: string[] = [];
+    if (photos.photos.length) {
+      // Uploads start on attach; usually they're done by the time Send is tapped.
+      setSendingPhotos(true);
+      try { photoIds = await photos.ready(); }
+      catch { setPhotoNotice("A photo didn’t upload. Remove it or attach it again."); return; }
+      finally { setSendingPhotos(false); }
+    }
+    const id = crypto.randomUUID(); submitted.current = { id, text }; setInput(""); photos.clear(); setPhotoNotice(""); setSavedError(""); setClientError(""); setActionError(""); clearError(); nearBottom.current = true;
+    await sendMessage({ id, role: "user", parts: [...photoIds.map((photoId) => ({ type: "file" as const, mediaType: "image/webp", url: `/api/photos/${photoId}` })), ...(text ? [{ type: "text" as const, text }] : [])] });
   }
   async function approve(id: string, approved: boolean) {
     if (voice.busy) return;
     setSavedError(""); setClientError(""); setActionError(""); clearError();
     await addToolApprovalResponse({ id, approved, options: { body: { approval: { id, approved } } } });
-  }
+  }  useEffect(() => { approveRef.current = approve; });
+
   return <Sheet open={open} onOpenChange={onOpenChange}>
     <VoiceLauncher voice={voice} hidden={open} disabled={busy || pendingApproval} replying={streaming || serverBusy} onDetails={onVoiceDetails} />
-    <SheetContent id="sift-chat" side="bottom" showCloseButton={false} overlayClassName={styles.overlay} className={`${styles.panel} gap-0 overflow-hidden border bg-background p-0`} onOpenAutoFocus={(event) => { event.preventDefault(); requestAnimationFrame(() => { nearBottom.current = true; setShowLatest(false); scrollArea.current?.scrollTo({ top: scrollArea.current.scrollHeight, behavior: "instant" }); if (window.matchMedia("(min-width: 640px)").matches) composer.current?.focus(); }); }}>
+    <SheetContent id="sift-chat" side="bottom" showCloseButton={false} overlayClassName={styles.overlay} className={`${styles.panel} gap-0 overflow-hidden border bg-background p-0`} onEscapeKeyDown={(event) => { if (streaming) { event.preventDefault(); void stop(); } }} onOpenAutoFocus={(event) => { event.preventDefault(); requestAnimationFrame(() => { nearBottom.current = true; setShowLatest(false); scrollArea.current?.scrollTo({ top: scrollArea.current.scrollHeight, behavior: "instant" }); if (window.matchMedia("(min-width: 640px)").matches) composer.current?.focus(); }); }}>
       <SheetHeader className="flex-row items-center justify-between gap-3 border-b border-border/60 px-5 pb-3 pt-[max(.75rem,env(safe-area-inset-top))]">
         <SheetTitle className="sr-only">sift</SheetTitle>
         <SheetDescription className="sr-only">{pageLabel}</SheetDescription>
         <div className="flex min-w-0 items-center gap-1">
           <SiftMark className="size-8 shrink-0" />
-          <DropdownMenu onOpenChange={(isOpen) => { if (isOpen) { setHistoryLoading(true); void onHistory().catch(() => setActionError("Couldn’t load conversations. Try again.")).finally(() => setHistoryLoading(false)); } }}>
+          <DropdownMenu onOpenChange={(isOpen) => { if (isOpen) { setHistoryLoading(!history.length); void onHistory().catch(() => setActionError("Couldn’t load conversations. Try again.")).finally(() => setHistoryLoading(false)); } }}>
             <DropdownMenuTrigger asChild><Button variant="ghost" aria-label="Conversation history" title="Past conversations" disabled={busy} className="min-w-0 gap-2 rounded-full px-2 text-xs text-muted-foreground">{conversation && conversation.title !== "New conversation" && <span className="max-w-[170px] truncate text-left">{conversation.title}</span>}<ChevronDown className="size-4 shrink-0" /></Button></DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-80 max-w-[calc(100vw-2rem)] rounded-2xl p-2">
               <DropdownMenuLabel className="px-3 pb-2 pt-2 text-xs font-medium text-muted-foreground">Past conversations</DropdownMenuLabel>
@@ -148,10 +191,13 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
         </div>
       </SheetHeader>
         {action === "rename" && conversation && <form className="space-y-3 border-b p-5" onSubmit={async (event) => {
-          event.preventDefault(); setActionBusy(true); setActionError("");
-          try { const updated = await api<Conversation>(`/api/conversations/${conversation.id}`, { method: "PATCH", body: { title: String(new FormData(event.currentTarget).get("title")) } }); onConversationChanged(updated); await onHistory(); setAction(null); }
-          catch (error) { setActionError(error instanceof Error ? error.message : "Couldn’t rename this conversation."); }
-          finally { setActionBusy(false); }
+          event.preventDefault(); setActionError("");
+          const title = String(new FormData(event.currentTarget).get("title")).trim(), previous = conversation;
+          if (!title) return;
+          // Show the new title at once; restore it if the server refuses.
+          onConversationChanged({ ...conversation, title }); setAction(null);
+          try { onConversationChanged(await api<Conversation>(`/api/conversations/${conversation.id}`, { method: "PATCH", body: { title } })); void onHistory().catch(() => undefined); }
+          catch (error) { onConversationChanged(previous); setActionError(error instanceof Error ? error.message : "Couldn’t rename this conversation."); }
         }}><label className="block text-sm">Conversation title<Input name="title" defaultValue={conversation.title} required maxLength={120} className="mt-2" /></label><div className="flex gap-2"><Button size="sm" disabled={actionBusy} type="submit">Save title</Button><Button size="sm" variant="ghost" type="button" onClick={() => setAction(null)}>Cancel</Button></div></form>}
         {action === "delete" && conversation && <div className="space-y-3 border-b p-5"><p className="text-sm font-medium">Delete this conversation?</p><p className="text-xs leading-relaxed text-muted-foreground">Its messages will be removed. Recipes and notes you saved will stay in your cookbook.</p><div className="flex gap-2"><Button size="sm" disabled={actionBusy} onClick={async () => {
           setActionBusy(true); setActionError("");
@@ -163,7 +209,7 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
           <div ref={scrollArea} onScroll={(event) => { const target = event.currentTarget; nearBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight < 100; setShowLatest(!nearBottom.current); }} className={`${styles.conversation} h-full space-y-7 overflow-y-auto overscroll-contain px-5 pb-6 pt-6 sm:px-7`} role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation messages">
             {loading && !conversation ? <AssistantThinking label="Opening your conversation…" /> : !messages.length && <div className="flex min-h-72 flex-col justify-center py-7 sm:min-h-80">
               <p className="mb-4 text-xs font-medium tracking-wide text-muted-foreground">A little help in the kitchen</p>
-              <h2 className="text-[28px] font-semibold tracking-[-.045em]">What sounds good?</h2><p className="mt-3 max-w-[340px] text-sm leading-6 text-muted-foreground">Find a recipe, make it yours, or plan your next meal.</p>
+              <h2 className="text-[28px] font-semibold tracking-[-.045em]">What sounds good?</h2><p className="mt-3 max-w-[340px] text-sm leading-6 text-muted-foreground">Paste a recipe link, text or photo to save it. Or ask for ideas, swaps and plans.</p>
               <div className="mt-7 grid grid-cols-2 gap-2">{[
                 { icon: BookOpen, label: "Find a recipe", prompt: "What can I cook tonight?" },
                 { icon: ListChecks, label: "Build a grocery list", prompt: "Help me build a grocery list from my recipes.", recipePrompt: "Make a grocery list for this recipe." },
@@ -171,8 +217,9 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
                 { icon: CalendarDays, label: "Plan some meals", prompt: "Help me plan meals for this week." },
               ].map(({ icon: Icon, label, prompt, recipePrompt }) => <button key={label} disabled={busy || !conversation} className="flex min-h-14 items-center gap-2.5 rounded-xl bg-muted/65 px-3.5 py-3 text-left text-xs leading-5 transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-50" onClick={() => { setInput(recipePrompt && getPageContext().activeRecipeId ? recipePrompt : prompt); composer.current?.focus(); }}><Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span>{label}</span></button>)}</div>
             </div>}
-            {messages.map((message) => <AssistantMessage key={message.id} message={message} busy={busy} streaming={streaming && message.id === messages.at(-1)?.id} liveArtifactReceipts={liveArtifactReceipts} onApproval={(id, approved) => { void approve(id, approved); }} onNavigate={() => onOpenChange(false)} />)}
-            {(streaming || serverBusy) && <AssistantThinking label={serverBusy && !streaming ? "Finishing the saved reply…" : status === "submitted" ? "Thinking…" : "Replying…"} />}
+            {messages.map((message) => <AssistantMessage key={message.id} message={message} busy={busy} animate={!initialIds.has(message.id)} streaming={streaming && message.role === "assistant" && message.id === messages.at(-1)?.id} liveArtifactReceipts={liveArtifactReceipts} onApproval={onApproval} onNavigate={closePanel} />)}
+            {streaming && messages.at(-1)?.role === "user" && <div aria-label="Sift response" className="sift-response sift-enter"><p className="mb-2.5 flex items-center"><SiftMark className="sift-pulse size-5" /><span className="sr-only">Sift</span></p><AssistantActivity /></div>}
+            {serverBusy && !streaming && <AssistantThinking label="Finishing the saved reply…" />}
             {(error || clientError || savedError) && <div role="alert" className="rounded-2xl border border-destructive/25 bg-destructive/5 p-4"><p className="text-sm leading-relaxed text-destructive">{error?.message || clientError || savedError}</p><p className="mt-2 text-xs leading-relaxed text-muted-foreground">Check the saved results before sending another message.</p><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={reloading || streaming} onClick={() => { void reloadSaved(); }}><RefreshCw />Reload saved conversation</Button><Button size="sm" variant="ghost" onClick={onSettings}><Settings2 />Sift settings</Button></div></div>}
             {(loadError || actionError) && <p role="alert" className="text-sm text-destructive">{loadError || actionError}</p>}
             {conversation && !!(error || clientError || savedError) && <AssistantDetails conversation={conversation} showReceipts={!!(error || clientError || savedError)} onNavigate={() => onOpenChange(false)} />}
@@ -183,10 +230,26 @@ export function AssistantPanel({ open, onOpenChange, conversation, history, load
         <div className="shrink-0 bg-background px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-5">
           {voiceVisible && <div className="mb-3 flex items-center gap-2 rounded-2xl border border-border/70 bg-muted/35 p-2.5"><VoiceIndicator phase={voice.phase} small /><p role="status" className="min-w-0 flex-1 text-xs font-medium">{voiceLabels[voice.phase]}</p><Button variant="ghost" size="icon" aria-label="Voice controls" title="Voice controls" className="size-11 rounded-full" onClick={onVoiceDetails}><SlidersHorizontal className="size-4" /></Button>{voice.busy && <Button variant="ghost" size="icon" aria-label="End voice" title="End voice" className="size-11 rounded-full" disabled={voice.phase === "ending"} onClick={() => void voice.end()}><PhoneOff className="size-4" /></Button>}</div>}
           {!voice.busy && <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-            <div className="rounded-[22px] border border-border/80 bg-muted/55 px-2 pb-2 pt-1 transition-shadow focus-within:border-ring/50 focus-within:ring-2 focus-within:ring-ring/10">
-              <Textarea id="sift-composer" ref={composer} aria-label="Message Sift" disabled={loading || !conversation} value={input} onChange={(event) => setInput(event.target.value)} maxLength={8000} rows={2} placeholder="Ask Sift…" className="max-h-40 min-h-[68px] resize-none rounded-none border-0 bg-transparent px-3 py-3 text-base leading-6 shadow-none focus-visible:ring-0 sm:text-sm dark:bg-transparent" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} />
-              <div className="flex min-h-11 items-center justify-between gap-1"><div className="min-w-0 flex-1">{conversation && <ModelSelector conversation={conversation} disabled={busy || pendingApproval} onBusy={setActionBusy} onChanged={(saved) => { setMessages(saved.messages as SiftUIMessage[]); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); onConversationChanged(saved); }} />}</div><div className="flex shrink-0 items-center gap-0.5"><MicrophoneSettings disabled={loading || !conversation} voiceBusy={voice.busy} onEndVoice={voice.endForAudioSettings} /><Button type="button" variant="ghost" size="icon" aria-label="Talk to Sift" title="Talk to Sift" disabled={busy || pendingApproval || !conversation} onClick={() => void voice.start()} className="rounded-full text-muted-foreground"><Mic className="size-[18px]" /></Button>{streaming ? <Button type="button" size="icon" aria-label="Stop generating" title="Stop generating" className="size-10 rounded-full" onClick={() => void stop()}><Square className="size-3.5 fill-current" /></Button> : <Button type="submit" size="icon" aria-label="Send message" disabled={busy || pendingApproval || !input.trim() || !conversation} className="size-10 rounded-full"><ArrowUp className="size-[18px]" /></Button>}</div></div>
+            <div onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes("Files")) event.preventDefault(); }} onDrop={(event) => { const files = Array.from(event.dataTransfer.files); if (files.length) { event.preventDefault(); attach(files); } }} className="rounded-[22px] border border-border/80 bg-muted/55 px-2 pb-2 pt-1 transition-shadow focus-within:border-ring/50 focus-within:ring-2 focus-within:ring-ring/10">
+              {photos.photos.length > 0 && <ul aria-label="Attached photos" className="flex gap-2 overflow-x-auto px-1.5 pb-1 pt-2">{photos.photos.map((photo, index) => <li key={photo.key} className="relative size-16 shrink-0">
+                <Image src={photo.preview} alt={`Attached photo ${index + 1}`} fill unoptimized className={`rounded-xl object-cover ${photo.status === "uploading" ? "opacity-60" : ""}`} />
+                {photo.status === "uploading" && <span role="status" aria-label={`Uploading photo ${index + 1}`} className="absolute inset-0 flex items-center justify-center"><LoaderCircle className="size-5 animate-spin text-white drop-shadow" /></span>}
+                {photo.status === "error" && <span title={photo.error} className="absolute inset-0 flex items-center justify-center rounded-xl bg-destructive/70"><AlertCircle className="size-5 text-white" /></span>}
+                <button type="button" aria-label={`Remove photo ${index + 1}`} onClick={() => photos.remove(photo.key)} className="absolute -right-1.5 -top-1.5 flex size-6 items-center justify-center rounded-full bg-foreground text-background shadow ring-2 ring-background"><X className="size-3.5" /></button>
+              </li>)}</ul>}
+              <Textarea id="sift-composer" ref={composer} aria-label="Message Sift" disabled={!conversation && !loading} value={input} onChange={(event) => setInput(event.target.value)} maxLength={8000} rows={2} placeholder={photos.photos.length ? "Add a note, or just send…" : "Ask Sift, or paste a recipe…"} onPaste={(event) => { const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/")); if (files.length) { event.preventDefault(); attach(files); } }} className="max-h-40 min-h-[68px] resize-none rounded-none border-0 bg-transparent px-3 py-3 text-base leading-6 shadow-none focus-visible:ring-0 sm:text-sm dark:bg-transparent" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && window.matchMedia("(min-width: 640px)").matches) { event.preventDefault(); void submit(); } }} />
+              <div className="flex min-h-11 items-center justify-between gap-1"><div className="min-w-0 flex-1">{conversation && <ModelSelector conversation={conversation} disabled={busy || pendingApproval} onBusy={setActionBusy} onChanged={(saved) => { setMessages(saved.messages as SiftUIMessage[]); setServerBusy(saved.busy); setSavedError(saved.lastError ?? ""); onConversationChanged(saved); }} />}</div><div className="flex shrink-0 items-center gap-0.5"><MicrophoneSettings disabled={loading || !conversation} voiceBusy={voice.busy} onEndVoice={voice.endForAudioSettings} /><input ref={photoInput} type="file" accept="image/*" multiple hidden onChange={(event) => { attach(Array.from(event.target.files ?? [])); event.target.value = ""; }} /><Button type="button" variant="ghost" size="icon" aria-label="Attach photos" title="Attach photos" disabled={!conversation || photos.photos.length >= maxChatPhotos} onClick={() => photoInput.current?.click()} className="rounded-full text-muted-foreground"><ImagePlus className="size-[18px]" /></Button><Button type="button" variant="ghost" size="icon" aria-label="Talk to Sift" title="Live voice conversation (ElevenLabs, billed)" disabled={busy || pendingApproval || !conversation || dictation.listening} onClick={() => void voice.start()} className="rounded-full text-muted-foreground"><AudioLines className="size-[18px]" /></Button><Button type="button" variant="ghost" size="icon" aria-label={dictation.listening ? "Stop dictation" : "Dictate message"} aria-pressed={dictation.listening} title={dictation.listening ? "Stop dictation" : "Dictate (free)"} disabled={loading || !conversation} onClick={() => {
+                if (dictation.listening) { dictation.stop(); return; }
+                // Without the Web Speech API (e.g. some home-screen apps), the
+                // keyboard's own dictation key is the free fallback.
+                if (!dictation.supported) { setKeyboardHint(true); composer.current?.focus(); return; }
+                setKeyboardHint(false); dictation.start(input);
+              }} className={`rounded-full ${dictation.listening ? "bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" : "text-muted-foreground"}`}>{dictation.listening ? <Square className="size-3.5 fill-current" /> : <Mic className="size-[18px]" />}</Button>{streaming ? <Button type="button" size="icon" aria-label="Stop generating" title="Stop generating" className="size-10 rounded-full" onClick={() => void stop()}><Square className="size-3.5 fill-current" /></Button> : <Button type="submit" size="icon" aria-label="Send message" disabled={busy || pendingApproval || (!input.trim() && !photos.photos.length) || photos.failed || sendingPhotos || !conversation} className="size-10 rounded-full">{sendingPhotos ? <LoaderCircle className="size-[18px] animate-spin" /> : <ArrowUp className="size-[18px]" />}</Button>}</div></div>
             </div>
+            {photoNotice && <p role="alert" className="mt-2.5 text-center text-[11px] leading-relaxed text-destructive">{photoNotice}</p>}
+            {dictation.listening && <p role="status" className="mt-2.5 text-center text-[11px] leading-relaxed text-muted-foreground">Listening… tap stop when you’re done, then send.</p>}
+            {dictation.error && <p role="alert" className="mt-2.5 text-center text-[11px] leading-relaxed text-destructive">{dictation.error}</p>}
+            {keyboardHint && !dictation.error && <p className="mt-2.5 text-center text-[11px] leading-relaxed text-muted-foreground">Tap the microphone on your keyboard to dictate.</p>}
             {pendingApproval && <p className="mt-2.5 text-center text-[11px] leading-relaxed text-muted-foreground">Respond to the confirmation above to continue.</p>}
           </form>}
         </div>

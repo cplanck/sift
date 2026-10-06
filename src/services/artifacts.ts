@@ -3,7 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Executor } from "@/db/connection";
 import { artifacts, recipes, recipeVersions } from "@/db/schema";
-import { addGroceryItemsSchema, addMealEntrySchema, artifactContentSchema, checkGroceryItemSchema, createArtifactSchema, deriveGrocerySchema, removeGroceryItemSchema, removeMealEntrySchema, type ArtifactContent, type ArtifactDetail, type ArtifactKind, type ArtifactSummary, type MealEntryInput } from "@/domain/artifact";
+import { addGroceryItemsSchema, addMealEntrySchema, artifactContentSchema, checkGroceryItemSchema, createArtifactSchema, deriveGrocerySchema, expectedRevisionSchema, removeGroceryItemSchema, removeMealEntrySchema, renameArtifactSchema, updateGroceryItemSchema, updateMealEntrySchema, type ArtifactContent, type ArtifactDetail, type ArtifactKind, type ArtifactSummary, type MealEntryInput } from "@/domain/artifact";
 import { DomainError } from "@/domain/errors";
 import { normalizeSearch, type Ingredient } from "@/domain/recipe";
 import { parseIngredient, scaleIngredient } from "@/domain/scaling";
@@ -159,6 +159,62 @@ export async function removeMealPlanEntry(db: Database, actor: Actor, id: string
   return mutateArtifact(db, actor, id, data.expectedRevision, "meal-plan", (_tx, content) => {
     if (!content.entries.some((entry) => entry.id === data.entryId)) throw new DomainError("NOT_FOUND", "Meal not found.");
     content.entries = content.entries.filter((entry) => entry.id !== data.entryId);
+    return content;
+  });
+}
+
+export async function renameArtifact(db: Database, actor: Actor, id: string, input: unknown): Promise<ArtifactDetail> {
+  const data = renameArtifactSchema.parse(input);
+  return db.transaction(async (tx) => {
+    await assertMembership(tx, actor);
+    const [row] = await tx.select().from(artifacts).where(scope(actor, id)).for("update");
+    if (!row) throw new DomainError("NOT_FOUND", "List or plan not found.");
+    if (row.revision !== data.expectedRevision) throw new DomainError("CONFLICT", "This list or plan changed in another tab or through Sift. Reload it before saving.");
+    const [updated] = await tx.update(artifacts).set({ title: data.title, revision: row.revision + 1, updatedAt: new Date(), updatedByUserId: actor.userId }).where(scope(actor, id)).returning();
+    return detail(updated);
+  });
+}
+export async function deleteArtifact(db: Database, actor: Actor, id: string, input: unknown): Promise<ArtifactSummary> {
+  const data = expectedRevisionSchema.parse(input);
+  return db.transaction(async (tx) => {
+    await assertMembership(tx, actor);
+    const [row] = await tx.select().from(artifacts).where(scope(actor, id)).for("update");
+    if (!row) throw new DomainError("NOT_FOUND", "List or plan not found.");
+    if (row.revision !== data.expectedRevision) throw new DomainError("CONFLICT", "This list or plan changed after the delete was proposed. Review it again before deleting.");
+    await tx.delete(artifacts).where(scope(actor, id));
+    return summary(row);
+  });
+}
+export async function updateGroceryItem(db: Database, actor: Actor, id: string, input: unknown): Promise<ArtifactDetail> {
+  const data = updateGroceryItemSchema.parse(input);
+  return mutateArtifact(db, actor, id, data.expectedRevision, "grocery", (_tx, content) => {
+    const item = content.groups.flatMap((group) => group.items).find((entry) => entry.id === data.itemId);
+    if (!item) throw new DomainError("NOT_FOUND", "Grocery item not found.");
+    // Edited text is the user's own wording; it no longer mirrors a scaled recipe line.
+    item.text = data.text; delete item.source;
+    return content;
+  });
+}
+export async function clearCheckedGroceryItems(db: Database, actor: Actor, id: string, input: unknown): Promise<ArtifactDetail & { removed: number }> {
+  const data = expectedRevisionSchema.parse(input);
+  let removed = 0;
+  const result = await mutateArtifact(db, actor, id, data.expectedRevision, "grocery", (_tx, content) => {
+    for (const group of content.groups) { const before = group.items.length; group.items = group.items.filter((item) => !item.checked); removed += before - group.items.length; }
+    content.groups = content.groups.filter((group) => group.items.length);
+    return content;
+  });
+  return { ...result, removed };
+}
+export async function updateMealPlanEntry(db: Database, actor: Actor, id: string, input: unknown): Promise<ArtifactDetail> {
+  const { expectedRevision, entryId, ...changes } = updateMealEntrySchema.parse(input);
+  return mutateArtifact(db, actor, id, expectedRevision, "meal-plan", (_tx, content) => {
+    const entry = content.entries.find((item) => item.id === entryId);
+    if (!entry) throw new DomainError("NOT_FOUND", "Meal not found.");
+    if (changes.date !== undefined) entry.date = changes.date;
+    if (changes.meal !== undefined) entry.meal = changes.meal;
+    if (changes.title !== undefined) entry.title = changes.title;
+    if (changes.servings !== undefined) entry.servings = changes.servings;
+    if (changes.note !== undefined) entry.note = changes.note;
     return content;
   });
 }

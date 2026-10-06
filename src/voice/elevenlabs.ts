@@ -170,6 +170,23 @@ export async function getElevenConversationUsage(providerConversationId: string)
   return usage;
 }
 
+/** Why the provider ended a call, reduced to a fixed category. Provider prose
+ * is matched against known quota wording only and never returned. */
+export async function getElevenConversationFailure(providerConversationId: string): Promise<"credits" | "failed" | null> {
+  if (!providerId.safeParse(providerConversationId).success) throw new DomainError("INVALID_INPUT", "Invalid voice conversation.");
+  const parsed = z.object({
+    status: z.string().max(100),
+    metadata: z.object({
+      termination_reason: z.string().max(2000).nullish(),
+      error: z.object({ reason: z.string().max(2000).nullish() }).nullish(),
+    }).optional(),
+  }).safeParse(await providerGet(`/v1/convai/conversations/${encodeURIComponent(providerConversationId)}`));
+  if (!parsed.success) return null;
+  const reason = `${parsed.data.metadata?.error?.reason ?? ""} ${parsed.data.metadata?.termination_reason ?? ""}`;
+  if (/quota_exceeded|out of credits|exceeds your quota/i.test(reason)) return "credits";
+  return parsed.data.status === "failed" ? "failed" : null;
+}
+
 /** Implements ElevenLabs' documented HMAC-SHA256 over `${timestamp}.${rawBody}`. */
 export function verifyElevenWebhook(rawBody: string, signature: string | null): ElevenConversationUsage | null {
   const { ELEVENLABS_WEBHOOK_SECRET } = requireConfig(["ELEVENLABS_WEBHOOK_SECRET"]);

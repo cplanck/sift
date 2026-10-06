@@ -1,10 +1,11 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, BookOpen, CalendarDays, Heart, ListChecks, Plus, Search, X } from "lucide-react";
+import { ArrowRight, CalendarDays, ChevronDown, Clock3, Heart, LayoutGrid, List, ListChecks, Plus, Search, X } from "lucide-react";
 import { type RecipeSummary, searchLibrary } from "@/domain/recipe";
 import type { ArtifactSummary } from "@/domain/artifact";
 import type { listPendingImports } from "@/services/imports";
+import { cn } from "@/lib/utils";
 import { AccountMenu } from "./account-menu";
 import { Brand, SiftMark } from "./brand";
 import { FavoriteButton } from "./favorite-button";
@@ -12,46 +13,91 @@ import { RecipeThumbnail } from "./recipe-thumbnail";
 import { PendingImports } from "./pending-imports";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { formatDuration } from "@/lib/format-duration";
 
-export function LibraryView({ initialRecipes, initialImports, recentArtifacts, name }: { initialRecipes: RecipeSummary[]; initialImports: Awaited<ReturnType<typeof listPendingImports>>; recentArtifacts: ArtifactSummary[]; name: string }) {
-  const [favoriteChanges, setFavoriteChanges] = useState<{ source: RecipeSummary[]; values: Record<string, boolean> }>({ source: initialRecipes, values: {} }), [query, setQuery] = useState(""), [favorites, setFavorites] = useState(false), [status, setStatus] = useState("current");
+export function LibraryView({ initialRecipes, initialImports, recentArtifacts, name, allowProductionSync = false }: { initialRecipes: RecipeSummary[]; initialImports: Awaited<ReturnType<typeof listPendingImports>>; recentArtifacts: ArtifactSummary[]; name: string; allowProductionSync?: boolean }) {
+  const [favoriteChanges, setFavoriteChanges] = useState<{ source: RecipeSummary[]; values: Record<string, boolean> }>({ source: initialRecipes, values: {} });
+  const [query, setQuery] = useState(""), [favorites, setFavorites] = useState(false), [status, setStatus] = useState("current"), [layout, setLayout] = useState<"grid" | "list">("grid");
+  const [recentOnly, setRecentOnly] = useState(false), [quick, setQuick] = useState(false), [vegetarian, setVegetarian] = useState(false), [collection, setCollection] = useState("");
+  const search = useRef<HTMLInputElement>(null);
   const recipes = initialRecipes.map((recipe) => {
     const favorite = favoriteChanges.source === initialRecipes ? favoriteChanges.values[recipe.id] : undefined;
     return favorite === undefined ? recipe : { ...recipe, favorite };
   });
-  const search = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && event.key === "k") { event.preventDefault(); search.current?.focus(); } };
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "k" && !document.querySelector('[role="dialog"]')) { event.preventDefault(); search.current?.focus(); }
+    };
     window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
   }, []);
-  const visible = searchLibrary(recipes, query).filter((r) => (!favorites || r.favorite) && (status === "archived" ? r.status === "archived" : r.status === "active"));
-  const recent = recipes.filter((r) => r.status === "active").slice(0, 5);
-  return <div className="mx-auto flex min-h-dvh max-w-[1600px]">
-    <aside className="sticky top-0 hidden h-dvh w-48 shrink-0 flex-col border-r p-5 lg:flex">
-      <div className="py-5"><Brand /></div>
-      <nav aria-label="Cookbook filters" className="mt-8 space-y-2">
-        <Button variant={!favorites ? "secondary" : "ghost"} className="w-full justify-start" aria-pressed={!favorites} onClick={() => setFavorites(false)}><BookOpen />Library</Button>
-        <Button variant={favorites ? "secondary" : "ghost"} className="w-full justify-start" aria-pressed={favorites} onClick={() => setFavorites(true)}><Heart />Favorites</Button>
-      </nav><p className="mt-auto pb-5 text-xs leading-relaxed text-muted-foreground">Your recipes.<br />Made your own.</p>
-    </aside>
-    <div className="min-w-0 flex-1 px-5 pb-20 md:px-10 lg:px-12">
-      <header className="flex min-h-24 items-center justify-between gap-4"><div className="lg:hidden"><Brand /></div><span className="hidden text-sm text-muted-foreground lg:block">Your personal cookbook</span><AccountMenu name={name} /></header>
-      <main id="main">
-        <div className="relative"><Search className="pointer-events-none absolute left-4 top-4 size-4 text-muted-foreground" /><Input ref={search} aria-label="Search recipes" placeholder="Search recipes, ingredients, or notes…" value={query} onChange={(e) => setQuery(e.target.value)} className="h-12 rounded-2xl bg-muted/45 pl-11 pr-16" maxLength={200} />
-          {query ? <Button variant="ghost" size="icon" aria-label="Clear search" className="absolute right-1 top-0.5" onClick={() => setQuery("")}><X /></Button> : <kbd className="absolute right-4 top-4 hidden rounded bg-muted px-1.5 text-xs text-muted-foreground sm:block">⌘ K</kbd>}
+  const filtered = searchLibrary(recipes, query).filter((r) => (!favorites || r.favorite) && (status === "archived" ? r.status === "archived" : r.status === "active") && (!quick || (r.totalMinutes !== null && r.totalMinutes < 30)) && (!vegetarian || r.tags.some((tag) => /^(vegetarian|vegan)$/i.test(tag))) && (!collection || r.collections.includes(collection)));
+  const visible = recentOnly ? [...filtered].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 8) : filtered;
+  const collections = [...new Set(recipes.flatMap((recipe) => recipe.collections))].sort();
+  const showRecent = !query && !favorites && !recentOnly && !quick && !vegetarian && !collection && status !== "archived";
+  const chip = (selected: boolean) => cn("h-11 rounded-full border border-border/50 bg-muted/30 px-4 text-xs text-muted-foreground hover:text-foreground", selected && "border-transparent bg-selection text-selection-foreground hover:bg-selection/90 hover:text-selection-foreground");
+  const changeFavorite = (id: string, favorite: boolean) => setFavoriteChanges((changes) => ({ source: initialRecipes, values: { ...(changes.source === initialRecipes ? changes.values : {}), [id]: favorite } }));
+
+  return <div className="library-shell mx-auto min-h-dvh max-w-[1200px] px-5 pb-32 sm:px-8 lg:px-12">
+    <header className="flex h-24 items-center justify-between gap-4"><Brand /><AccountMenu name={name} allowProductionSync={allowProductionSync} /></header>
+    <main id="main" className="pt-3 sm:pt-5">
+      <h1 className="sr-only">Library</h1>
+      <div className="mb-7 flex w-full items-center gap-3 sm:gap-4">
+        <div role="search" className="relative min-w-0 flex-1">
+          <Search className="pointer-events-none absolute left-4 top-1/2 size-[18px] -translate-y-1/2 text-muted-foreground" />
+          <Input ref={search} aria-label="Search recipes" placeholder="Search recipes, ingredients, or notes…" value={query} onChange={(event) => setQuery(event.target.value)} className="h-12 rounded-2xl border-border bg-muted/20 pl-11 pr-12 text-base shadow-none placeholder:text-muted-foreground sm:pr-16 sm:text-sm" maxLength={200} />
+          {query ? <Button variant="ghost" size="icon" aria-label="Clear search" className="absolute right-1 top-1/2 -translate-y-1/2 rounded-xl" onClick={() => { setQuery(""); search.current?.focus(); }}><X /></Button> : <kbd className="absolute right-4 top-1/2 hidden -translate-y-1/2 text-[11px] text-muted-foreground sm:block">⌘ K</kbd>}
         </div>
-        <div className="mb-10 mt-9 flex flex-wrap items-start justify-between gap-5"><div><h1 className="text-3xl font-semibold tracking-[-.04em] md:text-4xl">{favorites ? "Your favorites." : `Hello, ${name.split(" ")[0]}.`}</h1><p className="mt-2 text-muted-foreground">What are we cooking today?</p><span className="sr-only">Library</span></div><Button asChild><Link href="/recipes/new"><Plus />Add recipe</Link></Button></div>
-        {!query && !favorites && status !== "archived" && <PendingImports initial={initialImports} />}
-        {!query && !favorites && status !== "archived" && recentArtifacts.length > 0 && <section aria-labelledby="recent-artifacts-heading" className="mb-10"><h2 id="recent-artifacts-heading" className="mb-4 font-medium">On your counter</h2><div className="grid gap-3 sm:grid-cols-2">{recentArtifacts.map((artifact) => { const Icon = artifact.kind === "grocery" ? ListChecks : CalendarDays; return <Link key={artifact.id} href={`/artifacts/${artifact.id}`} className="flex min-w-0 items-center gap-3 rounded-2xl border p-4 hover:bg-muted/30"><Icon className="size-5 shrink-0 text-muted-foreground" /><span className="min-w-0"><span className="block truncate text-sm font-medium">{artifact.title}</span><span className="mt-1 block text-xs text-muted-foreground">{artifact.kind === "grocery" ? "Grocery list" : "Meal plan"}</span></span><ArrowRight className="ml-auto size-4 shrink-0 text-muted-foreground" /></Link>; })}</div><p className="mt-3 text-xs text-muted-foreground">Ask Sift to find an older list or plan.</p></section>}
-        {!query && !favorites && status !== "archived" && recent.length > 0 && <section aria-labelledby="recent-heading" className="mb-10"><div className="mb-4 flex items-center justify-between"><h2 id="recent-heading" className="font-medium">Recent</h2><a href="#all-recipes" className="flex min-h-11 items-center gap-1 text-sm text-muted-foreground">View all <ArrowRight size={14} /></a></div>
-          <div className="grid auto-cols-[148px] grid-flow-col gap-4 overflow-x-auto pb-3 sm:auto-cols-[180px]">{recent.map((recipe) => <Link key={recipe.id} href={`/recipes/${recipe.id}`} className="group min-w-0 rounded-xl focus-visible:outline-2 focus-visible:outline-ring"><RecipeThumbnail photoId={recipe.coverPhotoId} className="aspect-[4/3] w-full transition-colors group-hover:bg-border" /><h3 className="mt-3 truncate text-sm font-medium">{recipe.title}</h3><p className="mt-1 text-xs text-muted-foreground">{recipe.totalMinutes ? `${recipe.totalMinutes} min` : "Your recipe"}</p></Link>)}</div>
-        </section>}
-        <section id="all-recipes" aria-labelledby="all-heading"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 id="all-heading" className="font-medium">{query ? `Results for “${query}”` : favorites ? "Favorites" : "All recipes"} <span className="ml-1 text-xs font-normal text-muted-foreground">{visible.length}</span></h2>
-          <div className="flex items-center gap-2"><Button variant={favorites ? "secondary" : "ghost"} size="icon" className="lg:hidden" aria-label="Filter favorites" aria-pressed={favorites} onClick={() => setFavorites(!favorites)}><Heart /></Button><select aria-label="Recipe status" value={status} onChange={(event) => setStatus(event.target.value)} className="min-h-11 rounded-xl border bg-background px-3 text-sm"><option value="current">Current recipes</option><option value="archived">Archived</option></select></div></div>
-          {visible.length ? <div className="divide-y rounded-2xl border">{visible.map((recipe) => <article key={recipe.id} className="flex items-center gap-3 p-3 sm:gap-4 sm:p-4"><Link href={`/recipes/${recipe.id}`} className="flex min-w-0 flex-1 items-center gap-3 rounded-lg focus-visible:outline-2 focus-visible:outline-ring sm:gap-4"><RecipeThumbnail photoId={recipe.coverPhotoId} className="size-16 sm:size-20" /><div className="min-w-0"><h3 className="truncate font-medium">{recipe.title}</h3><div className="mt-2 flex flex-wrap gap-1.5">{recipe.tags.slice(0, 3).map((tag) => <span key={tag} className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">{tag}</span>)}{recipe.status !== "active" && <span className="text-xs text-muted-foreground">{recipe.status}</span>}</div></div></Link>{recipe.totalMinutes && <span className="hidden text-sm text-muted-foreground sm:block">{recipe.totalMinutes} min</span>}<FavoriteButton id={recipe.id} initial={recipe.favorite} onChange={(favorite) => setFavoriteChanges((changes) => ({ source: initialRecipes, values: { ...(changes.source === initialRecipes ? changes.values : {}), [recipe.id]: favorite } }))} /></article>)}</div>
-            : <div className="flex min-h-72 flex-col items-center justify-center rounded-2xl border border-dashed px-6 text-center"><SiftMark className="mb-5 size-10 text-muted-foreground" /><h3 className="text-xl font-medium">{query ? "No recipes found." : favorites ? "Keep your favorites close." : status === "archived" ? "No archived recipes." : "A fresh page."}</h3><p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">{query ? "Try a title, ingredient, tag, or a word from your notes." : favorites ? "Tap the heart on any recipe to find it here." : status === "archived" ? "Recipes you archive will appear here." : "Add the first recipe you’d like to make again."}</p>{!query && !favorites && status !== "archived" && <Button asChild variant="outline" className="mt-6"><Link href="/recipes/new"><Plus />Add your first recipe</Link></Button>}</div>}
-        </section>
-      </main>
-    </div>
+        <Button asChild className="size-12 rounded-2xl p-0"><Link href="/recipes/new" aria-label="Add recipe" title="Add recipe"><Plus className="size-5" /></Link></Button>
+      </div>
+      {showRecent && <PendingImports initial={initialImports} />}
+      {showRecent && recentArtifacts.length > 0 && <section aria-labelledby="recent-artifacts-heading" className="mb-10">
+        <h2 id="recent-artifacts-heading" className="mb-4 text-sm font-medium">On your counter</h2>
+        <div className="grid gap-3 sm:grid-cols-2">{recentArtifacts.map((artifact) => {
+          const Icon = artifact.kind === "grocery" ? ListChecks : CalendarDays;
+          return <Link key={artifact.id} href={`/artifacts/${artifact.id}`} className="flex min-w-0 items-center gap-3 rounded-2xl border border-border/70 bg-muted/20 px-4 py-3.5 transition-colors hover:bg-muted/60"><span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted"><Icon className="size-[18px] text-muted-foreground" /></span><span className="min-w-0"><span className="block truncate text-sm font-medium">{artifact.title}</span><span className="mt-1 block text-xs text-muted-foreground">{artifact.kind === "grocery" ? "Grocery list" : "Meal plan"}</span></span><ArrowRight className="ml-auto size-4 shrink-0 text-muted-foreground" /></Link>;
+        })}</div>
+      </section>}
+      <section id="all-recipes" aria-labelledby="all-heading" className="scroll-mt-6">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <nav aria-label="Cookbook filters" className="flex max-w-full items-center gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <Button variant="ghost" aria-pressed={!favorites && !recentOnly} className={chip(!favorites && !recentOnly)} onClick={() => { setFavorites(false); setRecentOnly(false); }}>All<span className="text-[10px] opacity-70">{recipes.filter((recipe) => recipe.status === (status === "archived" ? "archived" : "active")).length}</span></Button>
+            <Button variant="ghost" aria-pressed={recentOnly} className={chip(recentOnly)} onClick={() => { setRecentOnly(!recentOnly); setFavorites(false); }}>Recent</Button>
+            <Button variant="ghost" aria-label="Filter favorites" aria-pressed={favorites} className={chip(favorites)} onClick={() => { setFavorites(!favorites); setRecentOnly(false); }}><Heart className="size-3.5" />Favorites</Button>
+            <Button variant="ghost" aria-pressed={vegetarian} className={chip(vegetarian)} onClick={() => setVegetarian(!vegetarian)}>Vegetarian</Button>
+            <Button variant="ghost" aria-pressed={quick} className={chip(quick)} onClick={() => setQuick(!quick)}>&lt; 30 min</Button>
+          </nav>
+          <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2">
+            {collections.length > 0 && <select aria-label="Collection" value={collection} onChange={(event) => setCollection(event.target.value)} className="h-11 max-w-36 rounded-xl border bg-background px-2 text-xs text-muted-foreground"><option value="">Collections</option>{collections.map((item) => <option key={item}>{item}</option>)}</select>}
+            <div className="relative"><select aria-label="Recipe status" value={status} onChange={(event) => setStatus(event.target.value)} className="h-11 max-w-[146px] appearance-none rounded-xl border-0 bg-transparent pl-2 pr-7 text-xs text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring"><option value="current">Current recipes</option><option value="archived">Archived</option></select><ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" /></div>
+            <div role="group" aria-label="Recipe layout" className="flex rounded-xl border border-border/60 p-0.5"><Button variant="ghost" size="icon" aria-label="Grid view" aria-pressed={layout === "grid"} className={cn("size-10 rounded-lg text-muted-foreground", layout === "grid" && "bg-muted text-foreground")} onClick={() => setLayout("grid")}><LayoutGrid className="size-4" /></Button><Button variant="ghost" size="icon" aria-label="List view" aria-pressed={layout === "list"} className={cn("size-10 rounded-lg text-muted-foreground", layout === "list" && "bg-muted text-foreground")} onClick={() => setLayout("list")}><List className="size-4" /></Button></div>
+          </div>
+        </div>
+        <h2 id="all-heading" className={cn("mb-5 text-sm font-medium", !query && "sr-only")}>{query ? `Results for “${query}”` : favorites ? "Favorites" : recentOnly ? "Recently updated" : status === "archived" ? "Archived recipes" : "All recipes"}<span className="ml-2 font-normal text-muted-foreground">{visible.length}</span></h2>
+        {visible.length ? <div className={layout === "grid" ? "grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4" : "divide-y rounded-2xl border border-border/70"}>
+          {visible.map((recipe) => <article key={recipe.id} aria-label={`${recipe.title} recipe`} className={cn("group min-w-0", layout === "grid" && "overflow-hidden rounded-2xl border border-border/60 bg-card transition-colors hover:border-ring/50", layout === "list" && "flex items-center gap-4 p-3 sm:p-4")}>
+            <div className={cn("relative", layout === "list" && "shrink-0")}>
+              <RecipeThumbnail photoId={recipe.coverPhotoId} recipeId={recipe.id} stockPhoto={recipe.stockPhoto} title={recipe.title} tags={recipe.tags} imageHref={`/recipes/${recipe.id}`} sizes={layout === "grid" ? "(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 270px" : "128px"} className={layout === "grid" ? "aspect-[4/3] w-full rounded-none" : "size-20 rounded-xl sm:h-24 sm:w-32"} />
+              {layout === "grid" && <div className="absolute right-2.5 top-2.5"><FavoriteButton id={recipe.id} initial={recipe.favorite} className="size-10 rounded-full bg-background/95 text-foreground shadow-sm hover:bg-background" onChange={(favorite) => changeFavorite(recipe.id, favorite)} /></div>}
+            </div>
+            <div className={cn("min-w-0", layout === "grid" ? "px-3 pb-3 pt-3 sm:px-4 sm:pb-4" : "flex-1")}>
+              <Link href={`/recipes/${recipe.id}`} className="block rounded-sm hover:underline focus-visible:outline-2 focus-visible:outline-ring"><h3 className="line-clamp-2 min-h-[2.75em] text-[13px] font-medium leading-snug tracking-[-.015em] sm:text-sm">{recipe.title}</h3></Link>
+              {layout === "list" && recipe.description && <p className="mt-1.5 line-clamp-1 text-xs leading-5 text-muted-foreground">{recipe.description}</p>}
+              <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-2 text-[11px] text-muted-foreground">
+                {recipe.totalMinutes !== null && <span className="inline-flex items-center gap-1"><Clock3 className="size-3" />{formatDuration(recipe.totalMinutes)}</span>}
+                {(layout === "list" ? recipe.tags.slice(0, 2) : []).map((tag) => <span key={tag} className="rounded-md bg-muted/80 px-2 py-1 leading-none">{tag}</span>)}
+                {recipe.status === "archived" && <span>Archived</span>}
+              </div>
+            </div>
+            {layout === "list" && <FavoriteButton id={recipe.id} initial={recipe.favorite} onChange={(favorite) => changeFavorite(recipe.id, favorite)} />}
+          </article>)}
+        </div> : <div className="flex min-h-80 flex-col items-center justify-center rounded-3xl border border-dashed border-border/80 bg-muted/15 px-6 text-center">
+          <span className="mb-5 flex size-16 items-center justify-center rounded-2xl bg-muted/75">{query ? <Search className="size-6 text-muted-foreground" /> : favorites ? <Heart className="size-6 text-muted-foreground" /> : <SiftMark className="size-8 text-muted-foreground" />}</span>
+          <h3 className="text-xl font-medium tracking-tight">{query || quick || vegetarian || collection ? "No recipes found." : favorites ? "Keep your favorites close." : status === "archived" ? "No archived recipes." : "A fresh page."}</h3>
+          <p className="mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">{query || quick || vegetarian || collection ? "Try another search or clear a filter to see more recipes." : favorites ? "Tap the heart on any recipe to find it here." : status === "archived" ? "Recipes you archive will appear here." : "A link, a family favorite, a photo of a recipe. Save something you’d like to make again."}</p>
+          {(query || quick || vegetarian || collection) && <Button variant="ghost" className="mt-4 rounded-full" onClick={() => { setQuery(""); setQuick(false); setVegetarian(false); setCollection(""); search.current?.focus(); }}>Clear filters<ArrowRight className="size-4" /></Button>}
+          {!query && !favorites && !quick && !vegetarian && !collection && status !== "archived" && <Button asChild variant="outline" className="mt-6 rounded-full"><Link href="/recipes/new"><Plus />Add your first recipe</Link></Button>}
+        </div>}
+      </section>
+    </main>
   </div>;
 }

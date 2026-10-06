@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { StockPhoto } from "./stock-photo";
 
 export const quantitySchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("exact"), value: z.number().nonnegative().max(100000) }),
@@ -50,6 +51,7 @@ export interface RecipeSummary {
   favorite: boolean;
   updatedAt: string;
   coverPhotoId: string | null;
+  stockPhoto?: StockPhoto | null;
 }
 
 export function normalizeSearch(value: string) { return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("en").trim(); }

@@ -5,7 +5,7 @@ import { apiError, assertSameOrigin, readJson } from "@/lib/http";
 import { assistantResponse } from "@/ai/assistant-runtime";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 export async function POST(request: Request) {
   try {

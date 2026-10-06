@@ -11,7 +11,7 @@ import { stopSpeakerTest, useSpeakerPreference } from "./use-speaker";
 import { useVoicePlayback } from "./use-voice-playback";
 import { configureVoiceSpeaker, validateVoiceSpeaker, voiceSpeakerError, watchVoiceSpeaker } from "./voice-playback";
 import { voiceConversationError } from "./voice-conversation-state";
-import { classifyVoiceError } from "./voice-errors";
+import { classifyVoiceError, voiceErrorMessage } from "./voice-errors";
 
 export type VoicePhase = "idle" | "checking" | "permission" | "connecting" | "updating" | "listening" | "thinking" | "speaking" | "muted" | "ending" | "error";
 type Options = {
@@ -118,10 +118,23 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
     return task;
   }, [getPageContext, setMuted, refreshSaved, end]);
 
-  const reportSdkError = (context: unknown, source: "sdk-error" | "sdk-disconnect") => {
-    const failure = classifyVoiceError(context);
+  // ElevenLabs records why it dropped a call (for example, no credits), but a
+  // WebRTC hangup often reaches the browser without that reason. Ask once.
+  const explainProviderEnd = (id: string | undefined) => {
+    if (!id) return;
+    const stopped = generation.current;
+    setTimeout(() => {
+      void api<{ failure: "credits" | "failed" | null }>(`/api/voice/sessions/${id}`).then(({ failure }) => {
+        if (failure === "credits" && generation.current === stopped) setError(voiceErrorMessage("voice_credits"));
+      }).catch(() => undefined);
+    }, 1500);
+  };
+  const reportSdkError = (context: unknown, source: "sdk-error" | "sdk-disconnect", providerMessage?: string) => {
+    const failure = classifyVoiceError(context, providerMessage);
     console.warn(JSON.stringify({ event: "voice.client_error", source, stage, selectedInput: !!deviceId, ...failure.diagnostic }));
+    const id = session.current?.id;
     void end(failure.message);
+    if (failure.diagnostic.category !== "voice_credits") explainProviderEnd(id);
   };
 
   useConversation({
@@ -142,10 +155,14 @@ export function useVoiceSession({ ensureConversation, getPageContext, contextSig
     },
     onDisconnect: (details) => {
       if (!wanted.current) return;
-      if (details.reason === "error") reportSdkError(details, "sdk-disconnect");
-      else void end();
+      if (details.reason === "error") { reportSdkError(details, "sdk-disconnect", details.message); return; }
+      // Only our own end() disconnects as "user", and it clears wanted first.
+      // Anything reaching here was a provider hangup: never end silently.
+      const id = session.current?.id;
+      void end(voiceErrorMessage("voice_ended"));
+      explainProviderEnd(id);
     },
-    onError: (_message, context) => { if (wanted.current) reportSdkError(context, "sdk-error"); },
+    onError: (message, context) => { if (wanted.current) reportSdkError(context, "sdk-error", message); },
     onMessage: ({ role, message }) => {
       if (!wanted.current) return;
       setCaption({ speaker: role === "user" ? "You" : "Sift", text: message.slice(0, 2000) });

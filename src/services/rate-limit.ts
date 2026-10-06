@@ -5,7 +5,7 @@ import { usageLimits } from "@/db/schema";
 import { DomainError } from "@/domain/errors";
 import { assertMembership, type Actor } from "./workspaces";
 
-type LimitFeature = "import" | "photo" | "photo_finalize" | "assistant" | "voice" | "mcp";
+type LimitFeature = "import" | "photo" | "photo_finalize" | "assistant" | "voice" | "mcp" | "web";
 
 function limitWindow(actor: Actor, feature: LimitFeature, seconds: number, bucket?: string) {
   const window = Math.floor(Date.now() / (seconds * 1000));
@@ -14,7 +14,7 @@ function limitWindow(actor: Actor, feature: LimitFeature, seconds: number, bucke
 }
 
 function limitReached(feature: LimitFeature, seconds: number, expiresAt: Date) {
-  const labels: Record<LimitFeature, string> = { import: "recipe-import", photo: "photo-upload", photo_finalize: "photo-processing", assistant: "assistant", voice: "voice-start", mcp: "connected-app request" };
+  const labels: Record<LimitFeature, string> = { import: "recipe-import", photo: "photo-upload", photo_finalize: "photo-processing", assistant: "assistant", voice: "voice-start", mcp: "connected-app request", web: "web page" };
   const minutes = Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 60_000));
   const time = expiresAt.toISOString().slice(11, 16);
   return new DomainError("RATE_LIMITED", `You’ve reached Sift’s ${seconds === 3600 ? "hourly " : ""}${labels[feature]} limit. Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"} (${time} UTC).`);

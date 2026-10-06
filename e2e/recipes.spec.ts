@@ -7,6 +7,7 @@ test("create, search, scale, note, version, restore, favorite and isolate recipe
   expect(signup.ok()).toBe(true);
   await page.goto("/library");
   await page.getByRole("link", { name: "Add recipe", exact: true }).click();
+  await page.getByRole("tab", { name: "Manual", exact: true }).click();
   await page.getByLabel("Recipe title", { exact: true }).fill("Turkey Chili");
   await page.getByLabel("Ingredients", { exact: true }).fill("[Chili]\n½ cup broth\n1 14-oz can beans\n2–3 tbsp oil");
   await page.getByLabel("Instructions", { exact: true }).fill("Simmer for twenty minutes.\nTaste and serve.");
@@ -14,9 +15,16 @@ test("create, search, scale, note, version, restore, favorite and isolate recipe
   await page.getByRole("button", { name: "Save recipe", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Turkey Chili", exact: true })).toBeVisible();
   const recipeUrl = page.url(), recipeId = recipeUrl.split("/").at(-1);
+  await page.getByRole("checkbox", { name: "broth", exact: true }).check();
+  await expect(page.getByRole("checkbox", { name: "beans", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Show amounts", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "½ cup broth", exact: true })).toBeChecked();
   await page.getByLabel("Servings", { exact: true }).fill("8");
   await expect(page.getByText("1 cup broth", { exact: true })).toBeVisible();
   await expect(page.getByText("2 14-oz can beans", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Hide amounts", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "broth", exact: true })).toBeChecked();
+  await expect(page.getByLabel("Servings", { exact: true })).toHaveCount(0);
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
   await page.getByLabel("Recipe note").fill("This needed more salt.");
   await page.getByRole("button", { name: "Add note", exact: true }).click();

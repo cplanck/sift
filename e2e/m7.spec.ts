@@ -26,6 +26,9 @@ test("unconfigured voice is truthful and keeps the existing text conversation av
   await page.goto("/library");
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   await page.getByRole("textbox", { name: "Message Sift", exact: true }).fill("Keep this cooking question in the composer.");
+  // Typing is allowed while the conversation opens; its model control appears once it exists.
+  await expect(page.getByRole("button", { name: /^Assistant model:/ })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message Sift", exact: true })).toHaveValue("Keep this cooking question in the composer.");
   const conversations = await (await page.request.get("/api/conversations")).json() as { id: string }[];
   expect(conversations).toHaveLength(1);
   await page.getByRole("button", { name: "Talk to Sift", exact: true }).click();

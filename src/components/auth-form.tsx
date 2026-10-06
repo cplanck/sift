@@ -6,8 +6,8 @@ import { authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-export function AuthForm({ oauthClientName }: { oauthClientName?: string }) {
-  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
+export function AuthForm({ oauthClientName, initialMode = "sign-in" }: { oauthClientName?: string; initialMode?: "sign-in" | "sign-up" }) {
+  const [mode, setMode] = useState<"sign-in" | "sign-up">(initialMode);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const router = useRouter();

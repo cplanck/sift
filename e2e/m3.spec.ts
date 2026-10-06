@@ -15,7 +15,7 @@ test("review a pasted import, preserve versions, share anonymously, revoke, and 
   await page.emulateMedia({ colorScheme: "dark" });
   await signUp(page.request);
   await page.goto("/recipes/new");
-  await page.getByRole("tab", { name: "Paste text", exact: true }).click();
+  await page.getByRole("tab", { name: "Text", exact: true }).click();
   await page.getByLabel("Recipe text", { exact: true }).fill(pasted);
   await page.getByRole("button", { name: "Review recipe", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Review your recipe.", exact: true })).toBeVisible();
@@ -106,7 +106,7 @@ test("review a pasted import, preserve versions, share anonymously, revoke, and 
 test("shows real missing-provider errors and rejects untrusted mutation requests", async ({ page }) => {
   await signUp(page.request);
   await page.goto("/recipes/new");
-  await page.getByRole("tab", { name: "From a URL", exact: true }).click();
+  await page.getByRole("tab", { name: "URL", exact: true }).click();
   await page.getByLabel("Recipe URL", { exact: true }).fill("http://169.254.169.254/recipe");
   await page.getByRole("button", { name: "Review recipe", exact: true }).click();
   await expect(page.getByRole("alert").filter({ hasText: "Private network" })).toBeVisible();
@@ -115,7 +115,7 @@ test("shows real missing-provider errors and rejects untrusted mutation requests
   await page.getByRole("button", { name: "Review recipe", exact: true }).click();
   expect((await importFailure).status()).toBe(503);
   await expect(page.getByRole("alert").filter({ hasText: "INNGEST_EVENT_KEY" })).toBeVisible();
-  await page.getByRole("tab", { name: "From a photo", exact: true }).click();
+  await page.getByRole("tab", { name: "Photo", exact: true }).click();
   // Real browser decoding/compression; the request reaches the real API and
   // fails clearly at server configuration, without fake upload endpoints.
   const png = await sharp({ create: { width: 20, height: 20, channels: 3, background: "#888888" } }).png().toBuffer();

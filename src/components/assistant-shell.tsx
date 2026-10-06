@@ -33,6 +33,7 @@ function AssistantShellContent({ children }: { children: React.ReactNode }) {
   const [voiceDetailsOpen, setVoiceDetailsOpen] = useState(false);
   const [open, setOpen] = useState(false), [settingsOpen, setSettingsOpen] = useState(false), [page, setPage] = useState<PageRegistration | null>(null), [conversation, setConversation] = useState<Conversation | null>(null), [history, setHistory] = useState<ConversationList>([]), [loading, setLoading] = useState(false), [error, setError] = useState("");
   const registeredPage = useRef<PageRegistration | null>(null);
+  const [draft, setDraft] = useState("");
   const conversationRef = useRef(conversation), opening = useRef<Promise<Conversation> | null>(null);
   const voiceListeners = useRef(new Set<(saved: Conversation) => void>());
   useEffect(() => { conversationRef.current = conversation; }, [conversation]);
@@ -105,7 +106,7 @@ function AssistantShellContent({ children }: { children: React.ReactNode }) {
   }
   const pageLabel = page?.route.split("?")[0] === pathname ? page.title : pathname === "/library" ? "Your cookbook" : pathname === "/recipes/new" ? "Adding a recipe" : "Your cookbook";
   return <AssistantContext.Provider value={{ registerPage, openSettings, openAssistant: () => { void openPanel(true); }, voice }}>{children}
-    <AssistantPanel key={conversation?.id ?? "empty"} open={open} onOpenChange={openPanel} conversation={conversation} history={history} loading={loading} loadError={error} pageLabel={pageLabel} getPageContext={getPageContext} onSettings={openSettings} onNew={newConversation} onLoad={loadConversation} onHistory={refreshHistory} onConversationChanged={updateConversation} voice={voice} onVoiceDetails={() => setVoiceDetailsOpen(true)} subscribeVoiceConversation={subscribeVoiceConversation} />
+    <AssistantPanel key={conversation?.id ?? "empty"} open={open} onOpenChange={openPanel} conversation={conversation} history={history} loading={loading} loadError={error} pageLabel={pageLabel} getPageContext={getPageContext} onSettings={openSettings} onNew={newConversation} onLoad={loadConversation} onHistory={refreshHistory} onConversationChanged={updateConversation} voice={voice} onVoiceDetails={() => setVoiceDetailsOpen(true)} subscribeVoiceConversation={subscribeVoiceConversation} input={draft} onInputChange={setDraft} />
     <VoiceDetailsDialog open={voiceDetailsOpen} onOpenChange={setVoiceDetailsOpen} voice={voice} onText={() => void showText(true)} onTranscript={() => void showText(false)} />
     <GatewaySettings open={settingsOpen} onOpenChange={setSettingsOpen} />
   </AssistantContext.Provider>;

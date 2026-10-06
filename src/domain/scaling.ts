@@ -31,6 +31,31 @@ export function formatQuantity(value: number) {
   return String(Math.round(value * 1000) / 1000);
 }
 
+const unitWords = "fluid ounces?|fl\\.? oz\\.?|tablespoons?|teaspoons?|tbsp\\.?|tsp\\.?|cups?|ounces?|oz\\.?|pounds?|lbs?\\.?|kilograms?|kg|grams?|g|milliliters?|millilitres?|ml|liters?|litres?|l|pints?|quarts?|gallons?|cans?|jars?|packages?|packets?|bunches|bunch|cloves?|slices?|pinches|pinch|handfuls?";
+const leadingMeasure = new RegExp(`^(?:${unitWords})(?=\\s|$)\\s*(?:of\\s+)?`, "i");
+const packageMeasure = new RegExp(`^\\(?${numberPattern}\\s*[-–]?\\s*(?:${unitWords})\\)?\\s+`, "i");
+const parentheticalMeasure = new RegExp(`\\(\\s*${numberPattern}\\s*[-–]?\\s*(?:${unitWords})\\s*\\)`, "gi");
+
+// A display-only label. Keep the original wording for quantities, alternatives,
+// preparation instructions, scaling, and recipe history.
+export function ingredientName(ingredient: Ingredient) {
+  let name = ingredient.item?.trim();
+  if (!name) {
+    name = ingredient.text.trim();
+    const amount = name.match(amountPattern);
+    if (amount && parseIngredient(name).quantity) {
+      name = name.slice(amount[0].length).trim();
+      name = name.replace(packageMeasure, "").replace(/^(?:heaped|heaping|level|packed)\s+/i, "").replace(leadingMeasure, "");
+    }
+  }
+  const concise = name
+    .replace(parentheticalMeasure, "")
+    .replace(/,\s*(?:(?:finely|roughly|thinly|freshly|coarsely)\s+)?(?:chopped|diced|minced|sliced|grated|drained|rinsed|peeled|crushed|torn|zested|juiced|softened|melted|divided|cut\b|plus\b|to taste\b|for serving\b).*$/i, "")
+    .replace(/\s+(?:to taste|as needed|for serving|for garnish)\s*$/i, "")
+    .replace(/\s{2,}/g, " ").trim();
+  return concise || ingredient.text;
+}
+
 // Scaling is a view transformation: the immutable original text is always retained.
 // Package sizes in "1 14-oz can" are part of the remainder, not the count.
 export function scaleIngredient(ingredient: Ingredient, factor: number) {

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Providers } from "@/components/providers";
+import { appIconUrl } from "@/lib/app-icons";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -7,11 +8,11 @@ export const metadata: Metadata = {
   description: "Keep the recipes you love. Make them your own. Your personal cookbook, with a little help from Sift.",
   applicationName: "Sift",
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Sift" },
-  icons: { icon: [{ url: "/icons/favicon.svg", type: "image/svg+xml" }, { url: "/icons/icon-192.png", sizes: "192x192" }], apple: "/icons/apple-touch-icon.png" },
+  icons: { icon: [{ url: appIconUrl("favicon.svg"), type: "image/svg+xml" }, { url: appIconUrl("icon-32.png"), sizes: "32x32", type: "image/png" }], apple: [{ url: appIconUrl("apple-touch-icon.png"), sizes: "180x180", type: "image/png" }] },
 };
 export const viewport: Viewport = {
   width: "device-width", initialScale: 1, viewportFit: "cover",
-  themeColor: [{ media: "(prefers-color-scheme: dark)", color: "#141513" }, { media: "(prefers-color-scheme: light)", color: "#faf9f6" }],
+  themeColor: [{ media: "(prefers-color-scheme: dark)", color: "#0b1010" }, { media: "(prefers-color-scheme: light)", color: "#fbfaf8" }],
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { createAgentUIStream, createUIMessageStreamResponse, isStepCount, isToolUIPart, ToolLoopAgent, type InferUITools, type LanguageModel, type UIDataTypes, type UIMessage } from "ai";
+import { createAgentUIStream, createUIMessageStreamResponse, isStepCount, isToolUIPart, smoothStream, ToolLoopAgent, type InferUITools, type LanguageModel, type UIDataTypes, type UIMessage } from "ai";
 import type { Database } from "@/db/connection";
 import { assistantRequestSchema } from "@/domain/assistant";
 import { DomainError } from "@/domain/errors";
@@ -11,6 +11,9 @@ import { recordModelUsage } from "@/services/ai-usage";
 import { consumeLimit } from "@/services/rate-limit";
 import { getRecipe } from "@/services/recipes";
 import { getCookingSession } from "@/services/cooking";
+import { getArtifact } from "@/services/artifacts";
+import { assertChatPhoto } from "@/services/photos";
+import { readPhotoObject } from "@/lib/r2";
 import type { Actor } from "@/services/workspaces";
 import { assistantInstructions, resolveAssistantContext } from "./context";
 import { prepareAssistantModel } from "./models";
@@ -20,9 +23,12 @@ import { createVoiceStreamResponse, type VoiceStreamResult, type VoiceStreamOutc
 
 export type SiftUIMessage = UIMessage<unknown, UIDataTypes, InferUITools<RecipeTools>>;
 const failedResponse = "Sift couldn’t finish that response. Reload the conversation and review your saved changes before trying again.";
-const artifactTools: (keyof RecipeTools)[] = ["listArtifacts", "getArtifact", "createGroceryList", "deriveGroceryList", "addGroceryItems", "removeGroceryItem", "setGroceryItemChecked", "createMealPlan", "addMealPlanEntry", "removeMealPlanEntry"];
-const toolNames: (keyof RecipeTools)[] = ["searchRecipes", "getRecipe", "createRecipe", "updateRecipe", "archiveRecipe", "restoreArchivedRecipe", "restoreRecipeVersion", "listRecipeVersions", "listRecipeNotes", "addRecipeNote", "setRecipeFavorite", "startCookingSession", "getCookingSession", "updateCookingProgress", "finishCookingSession", "abandonCookingSession", "addCookingSessionNote", "listCookingHistory", ...artifactTools];
-const discoveryTools: (keyof RecipeTools)[] = ["searchRecipes", "getRecipe", "createRecipe", ...artifactTools];
+const artifactTools: (keyof RecipeTools)[] = ["listArtifacts", "getArtifact", "createGroceryList", "deriveGroceryList", "addGroceryItems", "removeGroceryItem", "setGroceryItemChecked", "createMealPlan", "addMealPlanEntry", "removeMealPlanEntry", "updateMealPlanEntry", "updateGroceryItem", "clearCheckedGroceryItems", "renameArtifact", "deleteArtifact"];
+// Available on every page. None of these overwrite canonical recipe content
+// from a stale read: batch labels re-read each recipe inside their transaction.
+const appTools: (keyof RecipeTools)[] = ["webSearch", "readWebPage", "importRecipe", "listImports", "getImportDraft", "approveImportDraft", "navigate", "findActiveCooks", "tagRecipes", "setRecipeFavorites", "scaleRecipe", "listRecipePhotos", "setRecipeCoverPhoto", "addPhotoToRecipe", "addPhotoToCook", "createShareLink", "listShareLinks", "revokeShareLink", "getAiUsage"];
+const toolNames: (keyof RecipeTools)[] = ["searchRecipes", "getRecipe", "createRecipe", "updateRecipe", "archiveRecipe", "restoreArchivedRecipe", "restoreRecipeVersion", "listRecipeVersions", "listRecipeNotes", "addRecipeNote", "setRecipeFavorite", "startCookingSession", "getCookingSession", "updateCookingProgress", "finishCookingSession", "abandonCookingSession", "addCookingSessionNote", "listCookingHistory", ...artifactTools, ...appTools];
+const discoveryTools: (keyof RecipeTools)[] = ["searchRecipes", "getRecipe", "createRecipe", ...artifactTools, ...appTools];
 
 function responseError(error: unknown) {
   return providerErrorMessage(error) ?? failedResponse;
@@ -66,6 +72,38 @@ export function assistantVoiceResponse(db: Database, actor: Actor, input: unknow
   return runAssistantResponse(db, actor, input, options, "voice");
 }
 
+const photoUrl = /^\/api\/photos\/([0-9a-f-]{36})$/i;
+/**
+ * Saved messages reference chat photos by URL. The model needs the bytes:
+ * the two most recent user messages carry their photos as images, and older
+ * photos become short references so long chats don't resend every image.
+ * Photo IDs are spelled out so tools can attach a photo to a recipe or cook.
+ */
+async function withPhotoData(db: Database, actor: Actor, messages: UIMessage[]) {
+  const userIndexes = messages.flatMap((message, index) => message.role === "user" ? [index] : []);
+  const recent = new Set(userIndexes.slice(-2));
+  const originals = new Map<string, UIMessage>();
+  const result: UIMessage[] = [];
+  for (const [index, message] of messages.entries()) {
+    if (message.role !== "user" || !message.parts.some((part) => part.type === "file")) { result.push(message); continue; }
+    const parts: UIMessage["parts"] = [];
+    for (const part of message.parts) {
+      if (part.type !== "file") { parts.push(part); continue; }
+      const id = part.url.match(photoUrl)?.[1];
+      if (!id) continue;
+      if (!recent.has(index)) { parts.push({ type: "text", text: `[Earlier photo, id ${id}]` }); continue; }
+      try {
+        const photo = await assertChatPhoto(db, actor, id);
+        const bytes = await readPhotoObject(photo.objectKey);
+        parts.push({ ...part, url: `data:image/webp;base64,${Buffer.from(bytes).toString("base64")}` }, { type: "text", text: `[Attached photo id: ${id}]` });
+      } catch { parts.push({ type: "text", text: `[Photo ${id} is no longer available]` }); }
+    }
+    originals.set(message.id, message);
+    result.push({ ...message, parts });
+  }
+  return { messages: result, originals };
+}
+
 async function runAssistantResponse(db: Database, actor: Actor, input: unknown, options: AssistantVoiceOptions, transport: "text" | "voice"): Promise<Response> {
   const request = assistantRequestSchema.parse(input);
   const page = await resolveAssistantContext(db, actor, request.context);
@@ -91,6 +129,8 @@ async function runAssistantResponse(db: Database, actor: Actor, input: unknown, 
   let settled = false;
   let settlement: Promise<void> | undefined;
   let latestMessages = run.messages;
+  // Model-only copies of user messages carrying photo bytes; never persisted.
+  let photoOriginals = new Map<string, UIMessage>();
   let errorMessage = failedResponse;
   let modelCallNumber = 0;
   let sawStreamError = false;
@@ -106,7 +146,8 @@ async function runAssistantResponse(db: Database, actor: Actor, input: unknown, 
   async function settle(messages: UIMessage[], outcome: "completed" | "failed" | "aborted") {
     if (settled) return;
     if (settlement) return settlement;
-    settlement = finishConversationTurn(db, actor, request.conversationId, run.runId, settledMessages(messages), outcome, outcome === "completed" ? undefined : errorMessage).then(() => { settled = true; });
+    const persisted = messages.map((message) => photoOriginals.get(message.id) ?? message);
+    settlement = finishConversationTurn(db, actor, request.conversationId, run.runId, settledMessages(persisted), outcome, outcome === "completed" ? undefined : errorMessage).then(() => { settled = true; });
     try { await settlement; }
     finally { settlement = undefined; }
   }
@@ -115,12 +156,15 @@ async function runAssistantResponse(db: Database, actor: Actor, input: unknown, 
     const model = options.model ?? chooseModel!(run.modelId);
     const trustedMessages = settledMessages(run.messages, "approval" in request ? request.approval.id : undefined);
     latestMessages = trustedMessages;
+    const withPhotos = await withPhotoData(db, actor, trustedMessages);
+    photoOriginals = withPhotos.originals;
     const tools = createRecipeTools(db, actor, { conversationId: request.conversationId, runId: run.runId,
       ...(options.assertActive ? { assertActive: () => options.assertActive!(run.runId) } : {}),
     });
     const agent = new ToolLoopAgent({
     model, instructions: [assistantInstructions(page), ...(transport === "voice" ? ["This reply is spoken through Sift voice. Use short, natural sentences and plain text. Answer directly without 'one moment', 'just a moment', or repeated offers of further help. Do not read raw JSON, IDs, tool arguments, or Markdown formatting aloud. Speech can be misheard: naming a dish or discussing an idea is not permission to save it. New recipes require on-screen confirmation before saving. If native approval is needed, ask the user to use the on-screen confirmation; spoken agreement does not approve an action."] : [])].join("\n\n"), tools,
-    stopWhen: isStepCount(8), maxOutputTokens: 6000, maxRetries: 0,
+    // Enough steps for bulk work (tagging a cookbook, building a week of plans).
+    stopWhen: isStepCount(30), maxOutputTokens: 6000, maxRetries: 0,
     allowSystemInMessages: false,
     // SDK 7 forwards prepared call options to streamText. Its default error
     // observer logs raw provider exceptions; replace it before the UI adapter.
@@ -165,6 +209,26 @@ async function runAssistantResponse(db: Database, actor: Actor, input: unknown, 
           return { type: "user-approval", reason: `Archive “${recipe.version.content.title}” from your Library? You can restore it later.` };
         } catch (error) { return { type: "denied", reason: safeAssistantError(error).error }; }
       },
+      deleteArtifact: async ({ artifactId, expectedRevision }) => {
+        if (approvalIssued) return { type: "denied", reason: "Confirm the pending action before proposing another action that needs approval." };
+        approvalIssued = true;
+        try {
+          await assertConversationRun(db, actor, request.conversationId, run.runId);
+          await options.assertActive?.(run.runId);
+          const artifact = await getArtifact(db, actor, artifactId);
+          if (artifact.revision !== expectedRevision) throw new DomainError("CONFLICT", "This list or plan changed. Read it again before proposing to delete it.");
+          return { type: "user-approval", reason: `Delete “${artifact.title}”? This can’t be undone.` };
+        } catch (error) { return { type: "denied", reason: safeAssistantError(error).error }; }
+      },
+      revokeShareLink: async () => {
+        if (approvalIssued) return { type: "denied", reason: "Confirm the pending action before proposing another action that needs approval." };
+        approvalIssued = true;
+        try {
+          await assertConversationRun(db, actor, request.conversationId, run.runId);
+          await options.assertActive?.(run.runId);
+          return { type: "user-approval", reason: "Turn off this share link? Anyone using it will lose access." };
+        } catch (error) { return { type: "denied", reason: safeAssistantError(error).error }; }
+      },
       abandonCookingSession: async ({ sessionId, expectedRevision }) => {
         if (approvalIssued) return { type: "denied", reason: "Confirm the pending action before proposing another action that needs approval." };
         approvalIssued = true;
@@ -182,8 +246,12 @@ async function runAssistantResponse(db: Database, actor: Actor, input: unknown, 
   });
 
     const stream = await createAgentUIStream({
-      agent, uiMessages: trustedMessages, generateMessageId: randomUUID,
-      timeout: 60000, sendReasoning: false, abortSignal: options.abortSignal,
+      agent, uiMessages: withPhotos.messages, generateMessageId: randomUUID,
+      // Tool-heavy replies can run long overall; any single step stays bounded.
+      timeout: { totalMs: 280_000, stepMs: 60_000 }, sendReasoning: false, abortSignal: options.abortSignal,
+      // Release text word by word so bursty provider chunks read smoothly.
+      // Speech is synthesized from whole phrases, so voice skips the delay.
+      ...(transport === "voice" ? {} : { experimental_transform: smoothStream<typeof tools>({ delayInMs: 12, chunking: "word" }) }),
       onError: observeError,
       onEnd: async ({ messages, outcome, isAborted }) => {
         latestMessages = messages;

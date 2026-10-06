@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Executor } from "@/db/connection";
-import { recipeFavorites, recipeImports, recipeNotes, recipes, recipeVersions } from "@/db/schema";
+import { recipeFavorites, recipeImports, recipeNotes, recipes, recipeStockPhotos, recipeVersions } from "@/db/schema";
 import { DomainError } from "@/domain/errors";
 import { createRecipeSchema, searchLibrary, updateRecipeSchema, type RecipeSummary } from "@/domain/recipe";
 import { assertMembership, type Actor } from "./workspaces";
@@ -35,25 +35,27 @@ export async function getRecipe(db: Database, actor: Actor, id: string) {
   if (!version) throw new DomainError("NOT_FOUND", "Recipe version not found.");
   const [favorite] = await db.select().from(recipeFavorites).where(and(eq(recipeFavorites.workspaceId, actor.workspaceId), eq(recipeFavorites.recipeId, id), eq(recipeFavorites.userId, actor.userId)));
   const [review] = recipe.status === "draft" ? await db.select({ id: recipeImports.id }).from(recipeImports).where(and(eq(recipeImports.recipeId, id), eq(recipeImports.workspaceId, actor.workspaceId))).limit(1) : [];
-  return { ...recipe, version, favorite: !!favorite, reviewImportId: review?.id ?? null };
+  const [stock] = await db.select({ photo: recipeStockPhotos.photo }).from(recipeStockPhotos).where(and(eq(recipeStockPhotos.recipeId, id), eq(recipeStockPhotos.workspaceId, actor.workspaceId)));
+  return { ...recipe, stockPhoto: stock?.photo ?? null, version, favorite: !!favorite, reviewImportId: review?.id ?? null };
 }
 
 export async function listRecipes(db: Database, actor: Actor, query = ""): Promise<RecipeSummary[]> {
   await assertMembership(db, actor);
-  const rows = await db.select({ recipe: recipes, version: recipeVersions, favorite: recipeFavorites.recipeId }).from(recipes)
+  const rows = await db.select({ recipe: recipes, version: recipeVersions, favorite: recipeFavorites.recipeId, stockPhoto: recipeStockPhotos.photo }).from(recipes)
     .innerJoin(recipeVersions, and(eq(recipeVersions.id, recipes.currentVersionId), eq(recipeVersions.recipeId, recipes.id), eq(recipeVersions.workspaceId, actor.workspaceId)))
     .leftJoin(recipeFavorites, and(eq(recipeFavorites.recipeId, recipes.id), eq(recipeFavorites.userId, actor.userId), eq(recipeFavorites.workspaceId, actor.workspaceId)))
+    .leftJoin(recipeStockPhotos, and(eq(recipeStockPhotos.recipeId, recipes.id), eq(recipeStockPhotos.workspaceId, actor.workspaceId)))
     .where(eq(recipes.workspaceId, actor.workspaceId)).orderBy(desc(recipes.updatedAt));
   const notes = await db.select({ recipeId: recipeNotes.recipeId, body: recipeNotes.body }).from(recipeNotes).where(eq(recipeNotes.workspaceId, actor.workspaceId));
   const notesByRecipe = new Map<string, string[]>();
   for (const note of notes) notesByRecipe.set(note.recipeId, [...(notesByRecipe.get(note.recipeId) ?? []), note.body]);
-  return searchLibrary(rows.map(({ recipe, version, favorite }) => ({
+  return searchLibrary(rows.map(({ recipe, version, favorite, stockPhoto }) => ({
     id: recipe.id, versionId: version.id, title: version.content.title, description: version.content.description,
     tags: version.content.tags, collections: version.content.collections,
     ingredientsText: version.content.ingredientSections.flatMap((section) => section.items.map((item) => item.text)).join(" "),
     notesText: (notesByRecipe.get(recipe.id) ?? []).join(" "),
     totalMinutes: version.content.totalMinutes ?? ((version.content.prepMinutes ?? 0) + (version.content.cookMinutes ?? 0) || null),
-    status: recipe.status, favorite: !!favorite, updatedAt: recipe.updatedAt.toISOString(), coverPhotoId: recipe.coverPhotoId,
+    status: recipe.status, favorite: !!favorite, updatedAt: recipe.updatedAt.toISOString(), coverPhotoId: recipe.coverPhotoId, stockPhoto,
   })), query.slice(0, 200));
 }
 

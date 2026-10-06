@@ -1,6 +1,6 @@
 const errorNames = ["Error", "NotAllowedError", "PermissionDeniedError", "SecurityError", "NotFoundError", "DevicesNotFoundError", "OverconstrainedError", "ConstraintNotSatisfiedError", "NotReadableError", "TrackStartError", "AbortError", "ConnectionError", "SessionConnectionError", "DeviceUnsupportedError", "TrackInvalidError", "UnsupportedServer", "UnexpectedConnectionState", "NegotiationError", "PublishDataError", "PublishTrackError", "SignalRequestError", "SignalReconnectError"] as const;
 const connectionReasons = ["NotAllowed", "ServerUnreachable", "InternalError", "Cancelled", "LeaveRequest", "Timeout", "WebSocket", "ServiceNotFound"] as const;
-const providerErrorTypes = ["unknown", "invalid_message", "telephony_agent_error", "mcp_tool_error", "mcp_https_error", "value_error", "missing_fields", "override_error", "missing_dynamic_variable_transfer", "missing_dynamic_variable", "websocket_disconnect", "safety_violation", "llm_timeout", "transport_receive_timeout", "asyncio_timeout", "http_exception", "max_duration_exceeded", "llm_error", "custom_llm_error", "cascade_brain_error", "asr_transcription_error", "vad_error", "turn_probability_error", "tts_cascade_error", "redis_timeout_error", "unknown_websocket_crash"] as const;
+const providerErrorTypes = ["unknown", "invalid_message", "telephony_agent_error", "mcp_tool_error", "mcp_https_error", "value_error", "missing_fields", "override_error", "missing_dynamic_variable_transfer", "missing_dynamic_variable", "websocket_disconnect", "safety_violation", "llm_timeout", "transport_receive_timeout", "asyncio_timeout", "http_exception", "max_duration_exceeded", "llm_error", "custom_llm_error", "cascade_brain_error", "asr_transcription_error", "vad_error", "turn_probability_error", "tts_cascade_error", "redis_timeout_error", "unknown_websocket_crash", "call_initialization_error", "dependency_error"] as const;
 
 const messages = {
   microphone_permission: "Audio access is blocked. Allow microphone access in your browser and system settings, then reconnect.",
@@ -17,9 +17,12 @@ const messages = {
   voice_configuration: "The voice service couldn’t use Sift’s configuration. Continue in text while the connection settings are checked.",
   voice_time_limit: "This voice session reached its time limit. Reconnect to continue in the same conversation.",
   voice_rate_limit: "The voice service has reached a request limit. Open the conversation for details and try again later, or continue in text.",
+  voice_credits: "The ElevenLabs account is out of voice credits. Add credits or upgrade the plan, then reconnect. Text chat still works.",
+  voice_ended: "The voice service ended the call. Reconnect to keep going, or continue in text.",
   voice_failed: "Voice couldn’t continue. Open the conversation to check for details, then reconnect or continue in text.",
 } as const;
 export type VoiceErrorCategory = keyof typeof messages;
+export const voiceErrorMessage = (category: VoiceErrorCategory) => messages[category];
 type Diagnostic = {
   category: VoiceErrorCategory;
   name?: typeof errorNames[number];
@@ -40,7 +43,10 @@ function allowed<T extends string>(value: unknown, values: readonly T[]): T | un
 
 /** Accept only structured SDK fields; never expose messages, stack, causes,
  * debugMessage, provider details, device IDs, or connection credentials. */
-export function classifyVoiceError(context: unknown): { message: string; diagnostic: Diagnostic } {
+const quota = /quota_exceeded|out of credits|exceeds your quota/i;
+
+/** `providerMessage` is only matched against known quota wording, never shown. */
+export function classifyVoiceError(context: unknown, providerMessage = ""): { message: string; diagnostic: Diagnostic } {
   const nested = field(context, "context");
   const name = allowed(field(context, "name"), errorNames);
   const errorType = allowed(field(context, "errorType") ?? field(nested, "type"), providerErrorTypes);
@@ -51,7 +57,8 @@ export function classifyVoiceError(context: unknown): { message: string; diagnos
   const status = typeof rawStatus === "number" && [400, 401, 403, 404, 408, 409, 429, 500, 502, 503, 504].includes(rawStatus) ? rawStatus : undefined;
   const code = typeof rawCode === "number" && [1, 10, 12, 13, 14, 15, 16, 18, 20, 21, 1000, 1002, 1006, 1008, 1011].includes(rawCode) ? rawCode : undefined;
   let category: VoiceErrorCategory = "voice_failed";
-  if (errorType === "max_duration_exceeded") category = "voice_time_limit";
+  if (quota.test(providerMessage) || quota.test(String(field(context, "reason") ?? ""))) category = "voice_credits";
+  else if (errorType === "max_duration_exceeded") category = "voice_time_limit";
   else if (status === 429) category = "voice_rate_limit";
   else if (errorType && ["custom_llm_error", "llm_error", "llm_timeout", "cascade_brain_error", "safety_violation"].includes(errorType)) category = "voice_reply";
   else if (errorType && ["asr_transcription_error", "vad_error", "turn_probability_error"].includes(errorType)) category = "voice_transcription";

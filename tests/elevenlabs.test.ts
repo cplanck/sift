@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigurationError } from "@/lib/env";
 import { buildElevenAgentConfig } from "@/voice/config";
-import { createElevenVoiceToken, getElevenConversationUsage, verifyElevenWebhook } from "@/voice/elevenlabs";
+import { createElevenVoiceToken, getElevenConversationFailure, getElevenConversationUsage, verifyElevenWebhook } from "@/voice/elevenlabs";
 
 const secret = "test-webhook-secret-for-elevenlabs-000000000";
 const sensitive = "private-provider-response-and-credential";
@@ -76,6 +76,18 @@ describe("private ElevenLabs transport", () => {
     await expect(getElevenConversationUsage("conv_sift")).resolves.toMatchObject({ costUsd: null, credits: 0 });
     providerFetch.mockResolvedValueOnce(Response.json({ ...usage, metadata: { call_duration_secs: 3 } }));
     await expect(getElevenConversationUsage("conv_sift")).resolves.toMatchObject({ costUsd: null, credits: null });
+  });
+
+  it("reduces a provider hangup reason to a fixed category", async () => {
+    providerFetch.mockResolvedValueOnce(Response.json({ status: "failed", metadata: { termination_reason: "", error: { code: 3000, reason: "[quota_exceeded] You've run out of credits." } } }));
+    await expect(getElevenConversationFailure("conv_sift")).resolves.toBe("credits");
+    providerFetch.mockResolvedValueOnce(Response.json({ status: "failed", metadata: { termination_reason: "This request exceeds your quota limit." } }));
+    await expect(getElevenConversationFailure("conv_sift")).resolves.toBe("credits");
+    providerFetch.mockResolvedValueOnce(Response.json({ status: "failed", metadata: { termination_reason: "custom_llm generation failed" } }));
+    await expect(getElevenConversationFailure("conv_sift")).resolves.toBe("failed");
+    providerFetch.mockResolvedValueOnce(Response.json({ status: "done", metadata: { termination_reason: "Client disconnected: 1000" } }));
+    await expect(getElevenConversationFailure("conv_sift")).resolves.toBeNull();
+    await expect(getElevenConversationFailure("../x")).rejects.toMatchObject({ code: "INVALID_INPUT" });
   });
 
   it("rejects invalid paths and a provider response for a different conversation", async () => {

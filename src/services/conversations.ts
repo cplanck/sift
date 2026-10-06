@@ -8,8 +8,12 @@ import { assistantModelOptions } from "@/ai/models";
 import { DomainError } from "@/domain/errors";
 import { assertMembership, type Actor } from "./workspaces";
 import { getUsageSummary } from "./ai-usage";
+import { assertChatPhoto } from "./photos";
 
 const scope = (actor: Actor, id: string) => and(eq(conversations.id, id), eq(conversations.workspaceId, actor.workspaceId), eq(conversations.createdByUserId, actor.userId));
+// Covers the assistant route's 300s maximum; a crashed run frees itself after this.
+const runLeaseMs = 300_000;
+export const chatPhotoUrl = (photoId: string) => `/api/photos/${photoId}`;
 const isBusy = (row: typeof conversations.$inferSelect) => !!row.activeRunId && !!row.leaseExpiresAt && row.leaseExpiresAt.getTime() > Date.now();
 const titleSchema = z.object({ title: z.string().trim().min(1).max(120) }).strict();
 const modelSchema = z.object({
@@ -112,7 +116,12 @@ export async function beginConversationTurn(db: Database, actor: Actor, input: A
       if (pending.length) throw new DomainError("CONFLICT", "Approve or decline the pending action before sending another message.");
       if (messages.length >= 200) throw new DomainError("INVALID_INPUT", "This conversation is full. Start a new conversation; your history will remain available.");
       if (messages.some((message) => message.id === data.message.id)) throw new DomainError("CONFLICT", "This message was already received. Reload the conversation.");
-      messages.push({ id: data.message.id, role: "user", parts: [{ type: "text", text: data.message.text }] });
+      const photoParts = [];
+      for (const photoId of new Set(data.message.photoIds)) {
+        await assertChatPhoto(tx, actor, photoId);
+        photoParts.push({ type: "file" as const, mediaType: "image/webp", url: chatPhotoUrl(photoId) });
+      }
+      messages.push({ id: data.message.id, role: "user", parts: [...photoParts, ...(data.message.text ? [{ type: "text" as const, text: data.message.text }] : [])] });
     } else {
       let found = false;
       messages = messages.map((message) => ({ ...message, parts: message.parts.map((part) => {
@@ -125,7 +134,7 @@ export async function beginConversationTurn(db: Database, actor: Actor, input: A
     // Transaction start time can precede a newer turn that acquired this lock
     // first. Record reservation order after the lock, not PostgreSQL now().
     const [turn] = await tx.insert(conversationTurns).values({ conversationId: row.id, requestId: data.requestId, status: "running", createdAt: sql`clock_timestamp()` }).returning({ id: conversationTurns.id });
-    await tx.update(conversations).set({ messages, activeRunId: turn.id, leaseExpiresAt: new Date(Date.now() + 120_000), lastError: null, updatedAt: new Date(), ...(row.title === "New conversation" && "message" in data ? { title: data.message.text.slice(0, 80) } : {}) }).where(scope(actor, row.id));
+    await tx.update(conversations).set({ messages, activeRunId: turn.id, leaseExpiresAt: new Date(Date.now() + runLeaseMs), lastError: null, updatedAt: new Date(), ...(row.title === "New conversation" && "message" in data ? { title: (data.message.text || "Photo").slice(0, 80) } : {}) }).where(scope(actor, row.id));
     return { runId: turn.id, messages, modelId: row.modelId };
   });
 }

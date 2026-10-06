@@ -25,6 +25,15 @@ export const removeGroceryItemSchema = z.object({ expectedRevision: revision, it
 export const checkGroceryItemSchema = removeGroceryItemSchema.extend({ checked: z.boolean() });
 export const addMealEntrySchema = z.object({ expectedRevision: revision, entry: mealEntryInputSchema }).strict();
 export const removeMealEntrySchema = z.object({ expectedRevision: revision, entryId: z.uuid() }).strict();
+export const renameArtifactSchema = z.object({ expectedRevision: revision, title }).strict();
+export const expectedRevisionSchema = z.object({ expectedRevision: revision }).strict();
+export const updateGroceryItemSchema = z.object({ expectedRevision: revision, itemId: z.uuid(), text: itemText }).strict();
+export const updateMealEntrySchema = z.object({
+  expectedRevision: revision, entryId: z.uuid(),
+  // Only supplied fields change; null clears a date (unscheduled).
+  date: calendarDate.nullable().optional(), meal: z.string().trim().min(1).max(60).optional(), title: title.optional(),
+  servings: servings.optional(), note: z.string().trim().max(2000).optional(),
+}).strict();
 const sourceSchema = z.object({ recipeId: z.uuid(), versionId: z.uuid(), servings });
 export const groceryContentSchema = z.object({
   // Derived names combine recipe/section titles; scaled amounts may add digits

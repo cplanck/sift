@@ -9,10 +9,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>{children}<BrowserStatus /></ThemeProvider>;
 }
 
-export function ThemeToggle() {
+export function ThemeToggle({ showLabel = false }: { showLabel?: boolean }) {
   const { theme, setTheme } = useTheme();
-  return <Button variant="ghost" size="icon" aria-label="Change color theme" onClick={() => setTheme(theme === "system" ? "dark" : theme === "dark" ? "light" : "system")}>
+  return <Button variant="ghost" size={showLabel ? "default" : "icon"} className={showLabel ? "w-full justify-start" : undefined} aria-label="Change color theme" onClick={() => setTheme(theme === "system" ? "dark" : theme === "dark" ? "light" : "system")}>
     <Monitor className="theme-system" /><Moon className="theme-dark" /><Sun className="theme-light" />
+    {showLabel && <span>Color theme</span>}
   </Button>;
 }
 

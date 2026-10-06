@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { bigint, boolean, doublePrecision, foreignKey, index, integer, jsonb, numeric, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 import type { RecipeContent, RecipeSource } from "@/domain/recipe";
+import type { StockPhoto } from "@/domain/stock-photo";
 import type { CookingProgress } from "@/domain/cooking";
 import type { ArtifactContent } from "@/domain/artifact";
 import type { UIMessage } from "ai";
@@ -225,6 +226,15 @@ export const recipes = pgTable("recipes", {
   createdAt: createdAt(), updatedAt: updatedAt(),
 }, (table) => [uniqueIndex("recipes_workspace_id_idx").on(table.workspaceId, table.id), index("recipes_workspace_status_idx").on(table.workspaceId, table.status, table.updatedAt)]);
 
+export const recipeStockPhotos = pgTable("recipe_stock_photos", {
+  recipeId: uuid("recipe_id").primaryKey(),
+  workspaceId: uuid("workspace_id").notNull(),
+  photo: jsonb("photo").$type<StockPhoto>().notNull(),
+  createdAt: createdAt(),
+}, (table) => [
+  foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "recipe_stock_photos_workspace_recipe_fk" }).onDelete("cascade"),
+]);
+
 export const recipeVersions = pgTable("recipe_versions", {
   id: uuid("id").defaultRandom().primaryKey(),
   workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
@@ -289,7 +299,7 @@ export const photos = pgTable("photos", {
   workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
   recipeId: uuid("recipe_id"),
   sessionId: uuid("session_id"),
-  purpose: text("purpose", { enum: ["recipe", "import", "cooking"] }).notNull(),
+  purpose: text("purpose", { enum: ["recipe", "import", "cooking", "chat"] }).notNull(),
   status: text("status", { enum: ["pending", "ready"] }).default("pending").notNull(),
   objectKey: text("object_key").notNull().unique(),
   contentType: text("content_type").notNull(), byteSize: integer("byte_size").notNull(),

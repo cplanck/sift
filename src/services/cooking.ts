@@ -78,6 +78,15 @@ export async function getActiveCookingSession(db: Database, actor: Actor, recipe
   return session ? getCookingSession(db, actor, session.id) : null;
 }
 
+/** The user's in-progress cooks across every recipe, newest first. */
+export async function listActiveCookingSessions(db: Database, actor: Actor) {
+  await assertMembership(db, actor);
+  const rows = await db.select({ id: cookingSessions.id, recipeId: cookingSessions.recipeId, startedAt: cookingSessions.startedAt, servings: cookingSessions.servings, title: recipeVersions.content }).from(cookingSessions)
+    .innerJoin(recipeVersions, and(eq(recipeVersions.id, cookingSessions.recipeVersionId), eq(recipeVersions.workspaceId, actor.workspaceId)))
+    .where(and(eq(cookingSessions.workspaceId, actor.workspaceId), eq(cookingSessions.startedByUserId, actor.userId), eq(cookingSessions.status, "active"))).orderBy(desc(cookingSessions.startedAt));
+  return rows.map((row) => ({ sessionId: row.id, recipeId: row.recipeId, title: row.title.title, servings: row.servings, startedAt: row.startedAt.toISOString() }));
+}
+
 export async function listCookingHistory(db: Database, actor: Actor, recipeId: string): Promise<CookingHistoryItem[]> {
   await getRecipe(db, actor, recipeId);
   const rows = await db.select({ session: cookingSessions, version: recipeVersions }).from(cookingSessions)

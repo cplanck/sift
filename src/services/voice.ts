@@ -12,7 +12,7 @@ import { resolveAssistantContext } from "@/ai/context";
 import { assistantVoiceResponse } from "@/ai/assistant-runtime";
 import { prepareAssistantModel } from "@/ai/models";
 import { createVoiceStreamResponse } from "@/ai/voice-stream";
-import { createElevenVoiceToken } from "@/voice/elevenlabs";
+import { createElevenVoiceToken, getElevenConversationFailure } from "@/voice/elevenlabs";
 import { abortConversationTurn, getConversation, recordConversationNotice } from "./conversations";
 import { assertLimitAvailable, consumeLimit } from "./rate-limit";
 import { resolveGatewayCredential } from "./credentials";
@@ -130,6 +130,17 @@ export async function endVoiceSession(db: Database, actor: Actor, id: string) {
     return endLocked(tx, row);
   });
 }
+export async function explainVoiceSessionEnd(db: Database, actor: Actor, id: string, options: {
+  /** Test-only provider boundary dependency. */
+  lookup?: typeof getElevenConversationFailure;
+} = {}) {
+  z.uuid().parse(id);
+  await assertMembership(db, actor);
+  const [row] = await db.select().from(voiceSessions).where(scope(actor, id));
+  if (!row) throw new DomainError("NOT_FOUND", "Voice connection not found.");
+  if (!row.providerConversationId) return { failure: null };
+  return { failure: await (options.lookup ?? getElevenConversationFailure)(row.providerConversationId) };
+}
 
 const fingerprint = (messages: string[]) => createHash("sha256").update(JSON.stringify(messages)).digest("hex");
 export function parseVoiceTurn(input: unknown, ordinal: string | null) {
@@ -183,7 +194,9 @@ export async function respondToVoice(db: Database, providerConversationId: strin
       const [current] = await tx.select().from(voiceSessions).where(eq(voiceSessions.id, row.id)).for("update");
       if (!current) throw new DomainError("UNAUTHENTICATED", endedMessage);
       await assertLive(tx, current);
-      if (current.revision !== row.revision) throw new DomainError("CONFLICT", "The page changed while voice was starting a reply. Try again.");
+      // Heartbeats bump the revision every 20s without moving the page. Only a
+      // real navigation may reject a reply that is already starting.
+      if (contextTarget(current.context) !== contextTarget(row.context)) throw new DomainError("CONFLICT", "The page changed while voice was starting a reply. Try again.");
       // Recheck under the reservation lock: simultaneous retries may both have
       // missed the initial lookup, but only one can create a model run.
       const [duplicate] = await tx.select().from(voiceTurns).where(and(eq(voiceTurns.voiceSessionId, current.id), eq(voiceTurns.fingerprint, parsed.fingerprint)));
