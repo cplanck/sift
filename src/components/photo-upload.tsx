@@ -5,25 +5,52 @@ import { api } from "@/lib/client-http";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
+type Decoded = { source: CanvasImageSource; width: number; height: number; release: () => void };
+
+/**
+ * Opens a photo for resizing. createImageBitmap is fastest, but Safari on iPhone
+ * can refuse very large camera photos (24–48 MP) that its regular image loader
+ * opens fine, so fall back to an <img> before giving up.
+ */
+async function decodePhoto(file: File): Promise<Decoded> {
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file);
+      return { source: bitmap, width: bitmap.width, height: bitmap.height, release: () => bitmap.close() };
+    } catch { /* Try the image element below. */ }
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.decoding = "async"; image.src = url;
+    await image.decode();
+    if (!image.naturalWidth || !image.naturalHeight) throw new Error("Empty image");
+    return { source: image, width: image.naturalWidth, height: image.naturalHeight, release: () => URL.revokeObjectURL(url) };
+  } catch {
+    URL.revokeObjectURL(url);
+    throw new Error("This photo couldn’t be opened. Try taking a screenshot of it, or choose another photo.");
+  }
+}
+
 export async function resizePhoto(file: File) {
   // Any image the browser can decode (including iPhone HEIC in Safari) is re-encoded as JPEG.
   if (file.type && !file.type.startsWith("image/")) throw new Error("Choose a photo.");
   if (file.size > 30 * 1024 * 1024) throw new Error("Choose a photo smaller than 30 MB.");
-  const bitmap = await createImageBitmap(file).catch(() => { throw new Error("This photo couldn’t be opened. Try another JPEG, PNG, or WebP."); });
+  const photo = await decodePhoto(file);
   try {
-    const ratio = Math.min(1, 2048 / Math.max(bitmap.width, bitmap.height));
+    const ratio = Math.min(1, 2048 / Math.max(photo.width, photo.height));
     const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(bitmap.width * ratio)); canvas.height = Math.max(1, Math.round(bitmap.height * ratio));
+    canvas.width = Math.max(1, Math.round(photo.width * ratio)); canvas.height = Math.max(1, Math.round(photo.height * ratio));
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Your browser couldn’t prepare this photo. Try another browser.");
-    context.fillStyle = "#ffffff"; context.fillRect(0, 0, canvas.width, canvas.height); context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#ffffff"; context.fillRect(0, 0, canvas.width, canvas.height); context.drawImage(photo.source, 0, 0, canvas.width, canvas.height);
     // Uploads pass through Sift's server, which accepts up to ~4 MB per request.
     for (const quality of [0.88, 0.78, 0.65, 0.5]) {
       const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Couldn’t prepare this photo.")), "image/jpeg", quality));
       if (blob.size <= 3.8 * 1024 * 1024) return blob;
     }
     throw new Error("This photo is too detailed to upload. Try a smaller image.");
-  } finally { bitmap.close(); }
+  } finally { photo.release(); }
 }
 
 function putPhoto(url: string, blob: Blob, onProgress: (value: number) => void) {
@@ -54,7 +81,7 @@ export function PhotoUpload({ recipeId, sessionId, purpose, onUploaded }: { reci
   const inputId = useId();
   const [files, setFiles] = useState<File[]>([]), [busy, setBusy] = useState(false), [error, setError] = useState(""), [stage, setStage] = useState(""), [progress, setProgress] = useState(0);
   return <div className="space-y-4 rounded-2xl border border-dashed p-5 sm:p-6">
-    <div><label htmlFor={inputId} className="text-sm font-medium">{purpose === "import" ? "Recipe photo" : purpose === "cooking" ? "Add cook photos" : "Add recipe photos"}</label><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{purpose === "import" ? "A clear photo of a recipe page or handwritten card. You’ll review the extracted recipe before saving." : purpose === "cooking" ? "Photos stay with this cook, separate from your recipe’s photos." : "Keep photos of the finished dish here. Choose a cover for your Library."} JPEG, PNG, or WebP, up to 30 MB each.</p></div>
+    <div><label htmlFor={inputId} className="text-sm font-medium">{purpose === "import" ? "Recipe photo" : purpose === "cooking" ? "Add cook photos" : "Add recipe photos"}</label><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{purpose === "import" ? "A clear photo of a recipe page or handwritten card. You’ll review the extracted recipe before saving." : purpose === "cooking" ? "Photos stay with this cook, separate from your recipe’s photos." : "Keep photos of the finished dish here. Choose a cover for your Library."} Any photo up to 30 MB.</p></div>
     <Input id={inputId} type="file" accept="image/jpeg,image/png,image/webp" multiple={purpose !== "import"} disabled={busy} className="h-auto min-h-11 py-2 file:mr-3 file:text-sm" onChange={(event) => { setFiles(Array.from(event.target.files ?? [])); setError(""); setStage(""); }} />
     <Button disabled={busy || !files.length} onClick={async () => {
       setBusy(true); setError("");
