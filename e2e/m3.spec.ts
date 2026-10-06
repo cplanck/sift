@@ -45,7 +45,8 @@ test("review a pasted import, preserve versions, share anonymously, revoke, and 
   await page.getByLabel("Recipe note").fill("Private note: double the salt next time.");
   await page.getByRole("button", { name: "Add note", exact: true }).click();
   await expect(page.getByText("Private note: double the salt next time.", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await page.getByRole("button", { name: "Recipe options", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Share recipe", exact: true }).click();
   await page.getByRole("button", { name: "Create link", exact: true }).click();
   const shareInput = page.getByLabel("Share link", { exact: true });
   await expect(shareInput).toHaveValue(/\/share\/[A-Za-z0-9_-]{43}$/);
@@ -89,7 +90,8 @@ test("review a pasted import, preserve versions, share anonymously, revoke, and 
     await sharedPage.reload();
     await expect(sharedPage.getByRole("heading", { name: "Smoky Turkey Chili", exact: true })).toBeVisible();
     await expect(sharedPage.getByRole("heading", { name: "New private recipe title", exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "Share", exact: true }).click();
+    await page.getByRole("button", { name: "Recipe options", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Share recipe", exact: true }).click();
     await page.getByRole("button", { name: "Revoke link", exact: true }).click();
     await page.getByRole("button", { name: "Confirm revoke", exact: true }).click();
     await expect(page.getByText("No links yet. This recipe is private.", { exact: true })).toBeVisible();

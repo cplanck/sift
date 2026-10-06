@@ -8,11 +8,11 @@ import { Button } from "./ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
-export function MicrophoneSettings({ voiceBusy = false, disabled = false, onEndVoice }: { voiceBusy?: boolean; disabled?: boolean; onEndVoice?: () => Promise<void> }) {
+export function MicrophoneSettings({ voiceBusy = false, disabled = false, onEndVoice, labeled = false }: { labeled?: boolean; voiceBusy?: boolean; disabled?: boolean; onEndVoice?: () => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
   return <Dialog open={open} onOpenChange={setOpen}>
-    <DialogTrigger asChild><Button type="button" variant="ghost" size="icon" disabled={disabled} aria-label="Microphone settings" title="Choose and test microphone"><SlidersHorizontal className="size-4" /></Button></DialogTrigger>
+    <DialogTrigger asChild><Button type="button" variant="ghost" size={labeled ? "default" : "icon"} className={labeled ? "w-full justify-start" : undefined} disabled={disabled} aria-label={labeled ? "Microphone & speaker" : "Microphone settings"} title="Choose and test audio devices"><SlidersHorizontal className="size-4" />{labeled && <>Microphone &amp; speaker<ChevronDown className="ml-auto size-4 text-muted-foreground" /></>}</Button></DialogTrigger>
     {open && <DialogContent showCloseButton={false} className="flex max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-[45rem] flex-col gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-[45rem]">
       <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border/60 px-5 py-5 sm:px-8 sm:py-6">
         <DialogHeader className="gap-2 text-left"><DialogTitle className="text-xl tracking-tight">Microphone &amp; speaker</DialogTitle><DialogDescription className="leading-relaxed">Choose your devices, then check your sound.</DialogDescription></DialogHeader>

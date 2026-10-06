@@ -24,7 +24,7 @@ export function AiUsageDetails({ usage, title = "Conversation usage", cookbook =
   usage: UsageSummary; title?: string; cookbook?: boolean; expanded?: boolean;
 }) {
   const body = <div className="space-y-4 text-xs text-muted-foreground">
-    {cookbook && <p className="leading-relaxed">Imports and conversations in this cookbook, including deleted chats.</p>}
+    {cookbook && <p className="leading-relaxed">Model usage in this cookbook, including imports, cooking notes, and deleted chats.</p>}
     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border p-3">
       <div><dt>Gateway cost</dt><dd title={exactCost(usage.reportedCostUsd)} className="mt-1 font-medium tabular-nums text-foreground">{gatewayCost(usage)}</dd></div>
       <div><dt>Model calls</dt><dd className="mt-1 font-medium tabular-nums text-foreground">{count(usage.calls)}</dd></div>

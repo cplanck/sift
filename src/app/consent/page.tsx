@@ -16,5 +16,5 @@ export default async function Consent({ searchParams }: { searchParams: Promise<
   catch (error) { if (!(error instanceof DomainError)) throw error; }
   const viewer = request ? await getViewer() : null;
   if (request && !viewer) redirect(`/sign-in?${request.oauthQuery}`);
-  return <div className="page-width"><header className="flex h-24 items-center justify-between"><Brand /><ThemeToggle /></header><main id="main" className="flex min-h-[75dvh] justify-center py-10 sm:py-16">{request && viewer ? <OAuthConsent request={request} email={viewer.email} /> : <OAuthRequestError />}</main></div>;
+  return <div className="page-width"><header className="flex h-16 sm:h-24 items-center justify-between"><Brand /><ThemeToggle /></header><main id="main" className="flex min-h-[75dvh] justify-center py-10 sm:py-16">{request && viewer ? <OAuthConsent request={request} email={viewer.email} /> : <OAuthRequestError />}</main></div>;
 }

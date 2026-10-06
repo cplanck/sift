@@ -9,12 +9,12 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 
-export function RecipeForm({ initialContent, importId, expectedVersionId }: { initialContent?: RecipeContent; importId?: string; expectedVersionId?: string }) {
+export function RecipeForm({ initialContent, importId, expectedVersionId, onDirty }: { onDirty?: () => void; initialContent?: RecipeContent; importId?: string; expectedVersionId?: string }) {
   const [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const router = useRouter();
   const ingredients = initialContent?.ingredientSections.map((section) => [section.name ? `[${section.name}]` : "", ...section.items.map((item) => item.text)].filter(Boolean).join("\n")).join("\n\n") ?? "";
   const instructions = initialContent?.instructionSections.map((section) => [section.name ? `[${section.name}]` : "", ...section.steps].filter(Boolean).join("\n")).join("\n\n") ?? "";
-  return <form className="mt-8 space-y-6" onSubmit={async (event) => {
+  return <form className="mt-8 space-y-6" onChange={onDirty} onSubmit={async (event) => {
     event.preventDefault(); const data = new FormData(event.currentTarget); setError(""); setBusy(true);
     const content = contentFromForm(data);
     content.totalMinutes = data.get("totalMinutes") ? Number(data.get("totalMinutes")) : null;
@@ -39,7 +39,7 @@ export function RecipeForm({ initialContent, importId, expectedVersionId }: { in
   }}>
     <label className="block text-sm font-medium">Recipe title<Input name="title" required maxLength={160} defaultValue={initialContent?.title} className="mt-2" placeholder="The one everyone asks for" /></label>
     <label className="block text-sm font-medium">A few words about it <span className="font-normal text-muted-foreground">(optional)</span><Textarea name="description" maxLength={4000} defaultValue={initialContent?.description} className="mt-2" /></label>
-    <div className="grid grid-cols-3 gap-3"><label className="text-sm">Servings<Input name="servings" type="number" min={0.125} max={1000} step="any" defaultValue={initialContent?.servings ?? 4} required className="mt-2" /></label><label className="text-sm">Prep (min)<Input name="prepMinutes" type="number" min={0} max={10080} defaultValue={initialContent?.prepMinutes ?? ""} className="mt-2" /></label><label className="text-sm">Cook (min)<Input name="cookMinutes" type="number" min={0} max={10080} defaultValue={initialContent?.cookMinutes ?? ""} className="mt-2" /></label></div>
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3"><label className="text-sm">Servings<Input name="servings" type="number" min={0.125} max={1000} step="any" defaultValue={initialContent?.servings ?? 4} required className="mt-2" /></label><label className="text-sm">Prep (min)<Input name="prepMinutes" type="number" min={0} max={10080} defaultValue={initialContent?.prepMinutes ?? ""} className="mt-2" /></label><label className="text-sm">Cook (min)<Input name="cookMinutes" type="number" min={0} max={10080} defaultValue={initialContent?.cookMinutes ?? ""} className="mt-2" /></label></div>
     <label className="block text-sm font-medium">Ingredients<Textarea name="ingredients" required maxLength={80000} defaultValue={ingredients} className="mt-2 min-h-40 leading-relaxed" placeholder={"½ cup olive oil\n2–3 tbsp lemon juice\nSalt to taste"} /></label>
     <p className="-mt-3 text-xs text-muted-foreground">One ingredient per line. Use [Sauce] or another heading for a section.</p>
     <label className="block text-sm font-medium">Instructions<Textarea name="instructions" required maxLength={120000} defaultValue={instructions} className="mt-2 min-h-40 leading-relaxed" placeholder="One step per line. Section headings work here too." /></label>

@@ -1,0 +1,60 @@
+.heading { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; }
+.heading h2 { font-family: Georgia, 'Times New Roman', serif; font-size: 27px; font-weight: 400; line-height: 1.2; letter-spacing: -.025em; }
+.heading p { max-width: 360px; color: var(--muted-foreground); font-size: 13px; line-height: 1.7; text-wrap: balance; }
+.icon { display: grid; place-items: center; width: 56px; height: 56px; margin-bottom: 4px; border: 1px solid var(--border); border-radius: 18px; color: var(--muted-foreground); background: var(--card); }
+.photos { width: min(100%, 760px); margin-inline: auto; padding: 28px 12px 80px; }
+.photos > * + * { margin-top: 22px; }
+.emptyPhotos { min-height: 100%; display: flex; flex-direction: column; justify-content: center; padding-block: 22px 42px; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px; }
+.actions button, .noteFooter button { border-radius: 999px; min-height: 42px; padding-inline: 18px; font-size: 12px; font-weight: 400; }
+.actions .primaryAction, .noteFooter .primaryAction { background: var(--selection); color: var(--selection-foreground); }
+.primaryAction:hover { filter: brightness(.96); }
+.hint { text-align: center; font-size: 11px; line-height: 1.6; color: var(--muted-foreground); }
+.photos > .hint { margin-top: 14px; }
+.upload { width: min(100%, 540px); margin-inline: auto; text-align: left; }
+.notes { width: min(100%, 580px); margin-inline: auto; padding: 24px 12px 80px; }
+.emptyNotes { min-height: 100%; display: flex; flex-direction: column; justify-content: center; padding-block: 16px 32px; }
+.noteForm { margin-top: 22px; border: 1px solid var(--border); border-radius: 20px; padding: 12px; background: var(--card); }
+.noteForm:focus-within { border-color: var(--ring); }
+.noteForm .noteInput { min-height: 86px; resize: vertical; border: 0; border-radius: 10px; padding: 10px 12px; background: transparent; box-shadow: none; font-size: 14px; line-height: 1.6; }
+.noteInput:focus-visible { outline: none; box-shadow: none; }
+.noteFooter { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 6px 4px 0 12px; }
+.noteFooter > span { font-size: 11px; color: var(--muted-foreground); }
+.savedNotes { margin-top: 24px; }
+.savedNotes article { padding: 20px 4px; border-top: 1px solid var(--border); }
+.noteDate { color: var(--muted-foreground); font-size: 11px; margin-bottom: 8px; }
+.noteBody { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.75; }
+@media (max-height: 800px) and (min-width: 640px) {
+  .emptyNotes { padding-block: 8px 20px; }
+  .emptyNotes .icon { width: 42px; height: 42px; margin: 0; border-radius: 14px; }
+  .emptyNotes .heading { gap: 7px; }
+  .emptyNotes .heading h2 { font-size: 25px; }
+  .emptyNotes .noteForm { margin-top: 16px; }
+  .emptyNotes .noteInput { min-height: 68px; }
+}
+@media (max-width: 639px) {
+  .notes, .photos { padding-inline: 4px; }
+  .emptyNotes, .emptyPhotos { justify-content: flex-start; padding-top: 24px; padding-bottom: 80px; }
+  .heading h2 { font-size: 25px; }
+  .noteFooter > span { display: none; }
+  .noteFooter { justify-content: flex-end; }
+  .actions { gap: 8px; }
+  .actions button { padding-inline: 15px; }
+}
+.photoGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.photoCard { min-width: 0; }
+.populatedPhotos { position: relative; padding-top: 20px; }
+.populatedPhotos > .heading { align-items: flex-start; justify-content: center; min-height: 42px; padding-right: 150px; }
+.populatedPhotos > .heading h2 { font-size: 24px; }
+.populatedPhotos > .actions { position: absolute; top: 20px; right: 12px; margin-top: 0; }
+.photoChoice { display: block; width: 100%; position: relative; min-width: 0; border-radius: 16px; text-align: left; cursor: pointer; }
+.photoChoice:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; }
+.photoChoice[aria-pressed="true"] { outline: 1px solid var(--selection); outline-offset: 3px; }
+.photoChoice:disabled { cursor: wait; }
+.coverBadge { position: absolute; bottom: 10px; left: 10px; display: flex; align-items: center; gap: 5px; padding: 5px 9px; border-radius: 999px; background: var(--background); color: var(--foreground); font-size: 10px; }
+.enhancedBadge { position: absolute; top: 10px; left: 10px; display: flex; align-items: center; gap: 5px; padding: 5px 9px; border-radius: 999px; background: var(--background); color: var(--muted-foreground); font-size: 10px; }
+.photoActions { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding-top: 8px; }
+.photoActions button { min-height: 40px; border-radius: 999px; font-size: 12px; font-weight: 400; }
+.photoActions .deletePhoto { margin-left: auto; color: var(--muted-foreground); }
+.photoActions .deletePhoto:hover { color: var(--destructive); }
+@media (max-width: 639px) { .photoGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; } }

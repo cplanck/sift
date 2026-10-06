@@ -1,0 +1,6 @@
+.navigation { display: flex; align-items: center; gap: .3rem; }
+.mode { display: inline-flex; justify-content: center; align-items: center; min-width: 78px; min-height: 44px; padding: .65rem 1.35rem; border-radius: 99px; color: var(--muted-foreground); font-size: .875rem; transition: background .15s, color .15s; }
+.mode:hover { color: var(--foreground); background: var(--muted); }
+.mode[aria-current="page"] { color: var(--foreground); background: var(--muted); }
+.mode:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+@media (max-width: 639px) { .navigation { width: 100%; justify-content: center; gap: .25rem; } .mode { min-width: 0; flex: 1; padding-inline: 1rem; } }

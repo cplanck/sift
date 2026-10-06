@@ -11,7 +11,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     assertSameOrigin(request);
-    const actor = await requestActor(request), data = z.object({ photoId: z.uuid() }).parse(await readJson(request));
-    return json(await setCoverPhoto(database(), actor, (await params).id, data.photoId));
+    const actor = await requestActor(request), data = z.object({ photoId: z.uuid().nullable(), expectedCoverRevision: z.number().int().nonnegative() }).parse(await readJson(request));
+    return json(await setCoverPhoto(database(), actor, (await params).id, data.photoId, data.expectedCoverRevision));
   } catch (error) { return apiError(error); }
 }

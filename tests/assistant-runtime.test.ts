@@ -56,6 +56,28 @@ function message(conversationId: string, text: string, recipe?: { id: string; ve
 }
 
 describe("AssistantRuntime with real SDK loop, domain services, and PostgreSQL", () => {
+  it("lets the agent assign categories and edit a shopping item through real tools", async () => {
+    const list = await createArtifact(db, actorA, { kind: "grocery", title: "Agent categories", groups: [{ name: "", items: [{ text: "Milk" }, { text: "Apples" }] }] });
+    if (list.content.kind !== "grocery") throw new Error("Expected grocery list");
+    const [milk, apples] = list.content.groups[0].items;
+    const conversation = await createConversation(db, actorA);
+    const model = modelWith(
+      toolCall("getArtifact", { artifactId: list.id }),
+      toolCall("categorizeGroceryItems", { artifactId: list.id, expectedRevision: list.revision, items: [{ itemId: milk.id, category: "Dairy" }, { itemId: apples.id, category: "Produce" }] }),
+      toolCall("updateGroceryItem", { artifactId: list.id, expectedRevision: list.revision + 1, itemId: milk.id, text: "2 liters milk", category: "Dairy & eggs" }),
+      toolCall("setShoppingListArchived", { artifactId: list.id, expectedRevision: list.revision + 2, archived: true }),
+      textReply("Updated the items and categories, then archived the list."),
+    );
+    const input = { ...message(conversation.id, "Categorize this list, change the milk to 2 liters, then archive it."), context: { route: `/artifacts/${list.id}`, activeArtifactId: list.id } };
+    const stream = await (await assistantResponse(db, actorA, input, { model })).text();
+    expect(stream).toContain("tool-output-available");
+    const saved = await getArtifact(db, actorA, list.id);
+    if (saved.content.kind !== "grocery") throw new Error("Expected grocery list");
+    expect(saved.content.groups[0].items).toMatchObject([{ text: "2 liters milk", category: "Dairy & eggs" }, { text: "Apples", category: "Produce" }]);
+    expect(saved.archivedAt).toEqual(expect.any(String));
+    expect(model.doStreamCalls[0].tools?.some((tool) => tool.name === "categorizeGroceryItems")).toBe(true);
+  });
+
   it("streams a real tool edit into an immutable version and persists authoritative messages", async () => {
     const recipe = await createRecipe(db, actorA, { content });
     const conversation = await createConversation(db, actorA);
@@ -399,7 +421,7 @@ describe("AssistantRuntime with real SDK loop, domain services, and PostgreSQL",
     const input = { title: "Agent grocery list", groups: [{ name: "Produce", items: [{ text: "2 lemons" }] }] };
     const model = modelWith(toolCall("createGroceryList", input, callId), toolCall("createGroceryList", input, callId), textReply("Saved your grocery list."));
     const stream = await (await assistantResponse(db, actorA, message(conversation.id, "Make a grocery list with two lemons."), { model })).text();
-    expect(model.doStreamCalls[0].tools?.map((entry) => entry.name)).toEqual(expect.arrayContaining(["createGroceryList", "createMealPlan", "listArtifacts", "getArtifact", "deriveGroceryList"]));
+    expect(model.doStreamCalls[0].tools?.map((entry) => entry.name)).toEqual(expect.arrayContaining(["createGroceryList", "addShoppingRecipe", "listArtifacts", "getArtifact", "deriveGroceryList"]));
     expect(stream).toContain('"artifactId"');
     const saved = await listArtifacts(db, actorA, { query: input.title });
     expect(saved).toHaveLength(1);
@@ -407,7 +429,7 @@ describe("AssistantRuntime with real SDK loop, domain services, and PostgreSQL",
     expect(reopened.content).toMatchObject({ kind: "grocery", groups: [{ name: "Produce", items: [{ text: "2 lemons", checked: false }] }] });
     const receipts = (await getConversation(db, actorA, conversation.id)).receipts.filter((receipt) => receipt.toolName === "createGroceryList");
     expect(receipts).toHaveLength(1);
-    expect(receipts[0].result).toEqual({ artifactId: reopened.id, kind: "grocery", title: reopened.title, revision: reopened.revision });
+    expect(receipts[0].result).toEqual({ artifactId: reopened.id, kind: "grocery", title: reopened.title, revision: reopened.revision, archivedAt: null });
   });
 
   it("uses the focused artifact context and saves native checkoffs without touching recipes", async () => {
@@ -437,22 +459,21 @@ describe("AssistantRuntime with real SDK loop, domain services, and PostgreSQL",
     expect((await getConversation(db, actorA, conversation.id)).receipts.map((receipt) => receipt.toolName)).toEqual(expect.arrayContaining(["setGroceryItemChecked", "addGroceryItems"]));
   });
 
-  it("derives an exact-version grocery list and saves a meal plan without starting a cook", async () => {
+  it("derives an exact-version shopping list without a separate plan or starting a cook", async () => {
     const recipe = await createRecipe(db, actorA, { content });
     const conversation = await createConversation(db, actorA);
     const model = modelWith(
       toolCall("getRecipe", { recipeId: recipe.id }),
       toolCall("deriveGroceryList", { title: "Chili shopping", recipes: [{ recipeId: recipe.id, versionId: recipe.version.id, servings: 8 }] }),
-      toolCall("createMealPlan", { title: "Chili dinner plan", entries: [{ date: "2026-10-12", meal: "Dinner", recipeId: recipe.id, versionId: recipe.version.id, servings: 8 }] }),
-      textReply("Saved the plan and its grocery list for eight."),
+      textReply("Saved the shopping list for eight."),
     );
-    await (await assistantResponse(db, actorA, message(conversation.id, "Save a dinner plan for this chili next Monday and its grocery list for eight.", recipe), { model })).text();
+    await (await assistantResponse(db, actorA, message(conversation.id, "Make a shopping list for this chili for eight servings.", recipe), { model })).text();
     const list = (await listArtifacts(db, actorA, { kind: "grocery", query: "Chili shopping" }))[0];
     const grocery = await getArtifact(db, actorA, list.id);
     if (grocery.content.kind !== "grocery") throw new Error("Expected a grocery list");
     expect(grocery.content.groups.flatMap((group) => group.items).map((item) => item.text)).toEqual(["2 14-oz can beans", "1 tsp salt"]);
-    const plan = await getArtifact(db, actorA, (await listArtifacts(db, actorA, { kind: "meal-plan", query: "Chili dinner plan" }))[0].id);
-    expect(plan.content).toMatchObject({ kind: "meal-plan", entries: [{ recipeId: recipe.id, recipeVersionId: recipe.version.id, title: "Turkey Chili", servings: 8 }] });
+    expect(grocery.content.recipes).toEqual([expect.objectContaining({ recipeId: recipe.id, servings: 8 })]);
+    expect(model.doStreamCalls[0].tools?.map((entry) => entry.name)).not.toContain("createMealPlan");
     expect(await getActiveCookingSession(db, actorA, recipe.id)).toBeNull();
     expect(await listVersions(db, actorA, recipe.id)).toHaveLength(1);
   });
@@ -551,7 +572,7 @@ describe("AssistantRuntime with real SDK loop, domain services, and PostgreSQL",
     expect(page.nextOffset).toBe(items.length);
     expect(Buffer.byteLength(JSON.stringify(output.output), "utf8")).toBeLessThan(32_768);
     const receipt = saved.receipts.find((entry) => entry.toolName === "setGroceryItemChecked");
-    expect(receipt?.result).toEqual({ artifactId: list.id, kind: "grocery", title: list.title, revision: list.revision + 1 });
+    expect(receipt?.result).toEqual({ artifactId: list.id, kind: "grocery", title: list.title, revision: list.revision + 1, archivedAt: null });
     expect(Buffer.byteLength(JSON.stringify(receipt?.result), "utf8")).toBeLessThan(512);
     const reloaded = await getArtifact(db, actorA, list.id);
     if (reloaded.content.kind !== "grocery") throw new Error("Expected a grocery list");

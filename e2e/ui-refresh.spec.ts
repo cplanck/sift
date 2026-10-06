@@ -29,6 +29,7 @@ test("centered recipe library, stock photos, grid/list layouts, search and works
   await expect(page.getByRole("complementary")).toHaveCount(0);
   await expect(page.locator("#all-recipes article")).toHaveCount(6);
   await expect(page.getByRole("heading", { name: "Recently added", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Open search", exact: true }).click();
   await page.getByRole("button", { name: "Vegetarian", exact: true }).click();
   await expect(page.locator("#all-recipes article")).toHaveCount(1);
   await expect(page.getByRole("article", { name: "Roasted Vegetables recipe", exact: true })).toBeVisible();
@@ -56,6 +57,7 @@ test("centered recipe library, stock photos, grid/list layouts, search and works
   await expect(page.locator("#all-recipes article")).toHaveCount(1);
   await page.getByRole("button", { name: "Grid view", exact: true }).click();
   await expect(card.locator("img")).toBeVisible();
+  await page.getByRole("button", { name: "Open search", exact: true }).click();
   await page.getByRole("textbox", { name: "Search recipes", exact: true }).fill("lemon");
   await expect(card).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -100,7 +102,7 @@ test("voice is the default launcher action and the chevron preserves text drafts
   await panel.getByRole("button", { name: "Close Sift", exact: true }).click();
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   await expect(panel.getByRole("textbox", { name: "Message Sift", exact: true })).toHaveValue("Help me build a grocery list from my recipes.");
-  await expect(panel.getByRole("button", { name: "Microphone settings", exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Conversation settings", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const bounds = await panel.boundingBox();
   expect(bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);

@@ -2,7 +2,7 @@ import type { MetadataRoute } from "next";
 import { appIconUrl } from "@/lib/app-icons";
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    id: "/", name: "Sift — Your personal cookbook", short_name: "Sift",
+    id: "/", name: "Sift", short_name: "Sift",
     description: "The recipes you love, all together.", start_url: "/", scope: "/",
     display: "standalone", background_color: "#0b1010", theme_color: "#0b1010",
     icons: [

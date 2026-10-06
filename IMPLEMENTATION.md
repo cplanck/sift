@@ -205,3 +205,113 @@ Verification: lint, typecheck, 17 provider/recipe/persistence tests, and product
 
 Production release preparation (2026-10-05): committed the visual refresh, persistent stock photos, ingredient names/amounts switch, PWA icons, development sync, chat photo attachments, dictation and expanded assistant tools. Full browser validation caught and corrected draft carryover when explicitly switching conversations, a live artifact checklist folded into lookup history, and accidental static rendering of the authenticated new-recipe page when build-time configuration is absent. Migration 0010 was applied to the linked production database after verifying its existing migration hashes and connection against Vercel. The production Unsplash credential was configured with explicit user approval.
 Release validation: lint/typecheck and 322 Vitest tests passed. The corrected full browser run passed 141 of 144 cases; the final conversation-loading fix then passed all 30 affected conversation/streaming cases across desktop, phone and tablet, covering the remaining three failures. The isolated production build passed. No local credentials or private sync state are tracked in Git.
+
+### Shopping lists
+
+Home / Shop / Cook replaces the separate Plan navigation. Recipes add directly
+to a named shopping list through a split button; the chosen list is remembered
+in this browser. Shop supports creating, renaming, selecting and deleting lists.
+Opening a list makes it the current destination. Lists contain saved recipe
+versions and per-list servings alongside manual items. Adding the same recipe
+again does not duplicate it. Recipe additions combine compatible quantities;
+removal and serving edits recompute only the relevant recipe contributions.
+Manual items and unaffected checkmarks remain. Changed quantities are unchecked.
+Deleting a list does not delete recipes or cooking history.
+
+This extends the existing artifact JSON, with optional `recipes` metadata and
+per-item `sources`; no database migration is needed. Older recipe-derived lists
+recover their recipe membership from existing ingredient provenance. Legacy
+meal-plan records remain readable, but new meal-plan tools are no longer exposed
+to the assistant. Sift instead has add/remove/updateShoppingRecipe tools. Mutation
+endpoints use membership checks, row locks, and expected revisions. Tests cover
+the domain/services and the full browser flow at desktop, phone and tablet sizes.
+
+### Recipe imagery (development integration)
+
+The recipe Photos tab has one gallery with upload, per-photo Enhance and Delete,
+and tap-to-select covers. Deletion asks for confirmation and clears an affected
+cover, shared cover reference, and stored image variants. Cooking photos can only
+be deleted by their session owner. Import review also offers Cover controls. Uploads, source recipe
+images and explicitly accepted generated candidates use the existing private photo
+store. `No cover` persists; a late upload or job cannot undo that choice. Existing
+selected photos are retained by migration. Automatic representative stock photos remain available when no explicit cover is selected. Source images are taken only from the parsed Recipe's
+JSON-LD image, fetched with the same public-address checks, redirect limits and
+DNS pinning as recipe HTML, then decoded and stored privately. Image failure does
+not fail the recipe import.
+
+Generated covers are **disabled by default**. To enable a controlled trial, set
+`COVER_GENERATION_ENABLED=1`, `COVER_IMAGE_MODEL`, `COVER_DAILY_BUDGET_USD` and
+`COVER_REQUEST_RESERVATION_USD`, alongside the existing Gateway, R2 and Inngest
+settings. Model adapters currently support image-only `bfl/flux-3-image` and
+`spacexai/grok-imagine-image`, one image at 4:3, SDK retries disabled. These are
+candidates, not benchmark winners. Set the reservation to a verified upper bound
+for the configured provider request; it is not a provider-enforced dollar cap.
+Reservations persist for the UTC day even for cancelled/failed/discarded requests;
+reported overages are added, and unknown actual costs remain null. Provider price
+changes still require configuration review. No automatic cover generation is
+triggered by imports or recipe saves.
+
+Enhance uses `COVER_IMAGE_EDIT_MODEL` (default `spacexai/grok-imagine-image`,
+also supports `bfl/flux-2-pro`) with the existing enable flag and budget. It sends
+the authorized original photo bytes and a preservation-focused editing prompt
+through Gateway, and saves a separate candidate with source-photo provenance.
+The original and cover stay unchanged until the cook selects a result. Deleting
+the source cancels unfinished enhancements; completed enhancements remain usable.
+Local development is configured for Grok with a $1 daily reservation budget and
+$0.10 reservation per request. Production configuration is unchanged. Provider
+integration follows the [Gateway image SDK documentation](https://vercel.com/docs/ai-gateway/modalities/image-generation/ai-sdk).
+
+Requests are durable outbox rows. The minute-based `dispatch-covers` Inngest job
+recovers missed event dispatch. The worker claims a single provider attempt before
+calling Gateway, retains bounded output bytes in PostgreSQL until R2 publication,
+and creates 320/640/up-to-1200px WebP derivatives without upscaling. Actual dimensions,
+original key, checksum, model, prompt version, snapshot hash, generation ID, latency
+and reported cost are retained. Candidates never change a cover until accepted.
+An ambiguous provider outcome is not automatically repeated. `Finish saved image`
+retries only storage/processing for a retained output after terminal failure.
+Cancellation does not cancel a provider bill. Unreferenced deterministic R2 objects
+from cancellation/deletion and retained output on unrecoverable failure need a
+retention cleanup job before broad rollout.
+
+Cooking instructions retain their string format. Each new recipe version stores
+parallel `illustrationKeys` for 12 cooking actions. All 12 actions now use generated
+transparent sage PNG illustrations, with an additional noodle-tossing variant.
+The versioned manifest and full authoring prompts are in
+`src/assets/cooking-illustrations.json`; assets live in
+`public/illustrations/cooking/`. No hand-authored SVG fallback remains. Existing
+versions use the same deterministic selector at render time. Ambiguous actions
+collapse to text-only; authored headings can identify the primary action.
+
+Validation uses mocked paid-provider and R2 transport with real PostgreSQL and
+Sharp. The paid quality/cost benchmark, OpenAI multimodal adapter, benchmark gallery,
+and production retention cleanup are still rollout work; no paid image generation
+or benchmark has been run by this implementation. The feature flag stays off until
+that evaluation selects and pins the model/preset and verifies its reservation.
+
+
+### October 6 release
+
+- Home / Shop / Cook, a compact selected shopping-list card, active cooks only,
+  responsive recipe detail and cooking views, persisted resizable sidebars,
+  mobile navigation, and a single elapsed cooking timer.
+- Cooking history uses compact date/status cards with a notes indicator. Stop
+  offers save/delete; finish accepts freeform notes preserved verbatim while an
+  Inngest job can organize a separate copy. Recipe approval retries normalize
+  derived illustration metadata before comparing saved content.
+- Conversation selection and image attachments are below the composer. Separate
+  dictation/live voice controls remain in the input; model choice, audio devices,
+  rename, delete and usage live in Conversation settings. User settings includes
+  scoped conversation run/cost history.
+- Client navigation reuses pages for 60 seconds. Home links prefetch and avoid the
+  root redirect; cooking resumes reconcile the current saved session before edits.
+- Migrations 0011–0016 are additive and required for this release. Generated cover
+  requests remain disabled in production unless explicitly configured. Production
+  lacks Inngest event/signing credentials: existing queued cooking notes retain
+  their original text, but background organization and queued imports require
+  connecting Inngest. No local development credentials are published.
+
+Release verification: lint, production build, and all 379 unit/integration tests
+pass. The selected browser release checks pass across desktop, phone and tablet
+(52 passed, 8 viewport-specific skips, including the corrected selector reruns).
+Production migrations 0011–0016 were applied and all 17 migration hashes verified.
+The local Inngest app sync is healthy, with five jobs and two failure handlers.

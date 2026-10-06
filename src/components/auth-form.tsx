@@ -12,8 +12,7 @@ export function AuthForm({ oauthClientName, initialMode = "sign-in" }: { oauthCl
   const [busy, setBusy] = useState(false);
   const router = useRouter();
   return <div className="w-full max-w-sm">
-    <p className="text-xs uppercase tracking-[.2em] text-muted-foreground">Your personal cookbook</p>
-    <h1 className="mt-4 text-4xl font-medium tracking-tight">{mode === "sign-in" ? "Welcome back." : "Make yourself at home."}</h1>
+    <h1 className="text-4xl font-medium tracking-tight">{mode === "sign-in" ? "Welcome back." : "Make yourself at home."}</h1>
     {oauthClientName && <p className="mt-5 break-words text-sm leading-relaxed text-muted-foreground">Sign in to connect <span className="font-medium text-foreground">{oauthClientName}</span> to your cookbook. You’ll review its permissions before access is granted.</p>}
     <form className="mt-10 space-y-5" onSubmit={async (event) => {
       event.preventDefault(); setBusy(true); setError("");

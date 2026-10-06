@@ -26,7 +26,7 @@ test("a cook pins its version, persists progress and session notes, and finishes
   expect(await (await page.request.get(`/api/recipes/${recipe.id}/cooks`)).json()).toEqual([]);
   await page.reload();
   expect(await (await page.request.get(`/api/recipes/${recipe.id}/cooks`)).json()).toEqual([]);
-  await page.getByRole("button", { name: "Cook", exact: true }).click();
+  await page.getByRole("button", { name: "Start cooking", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/recipes/${recipe.id}\\?cook=[0-9a-f-]+$`));
   const sessionId = new URL(page.url()).searchParams.get("cook")!;
   const getSession = async () => await (await page.request.get(`/api/cooking-sessions/${sessionId}`)).json();
@@ -85,13 +85,15 @@ test("a cook pins its version, persists progress and session notes, and finishes
   await page.getByRole("button", { name: "Finish cooking", exact: true }).click();
   const finish = page.getByRole("dialog", { name: "How did it go?", exact: true });
   await finish.getByRole("combobox", { name: "Rating (optional)", exact: true }).selectOption("5");
-  await finish.getByRole("textbox", { name: "Summary (optional)", exact: true }).fill("Roasting made the difference.");
+  await finish.getByRole("textbox", { name: "Notes from this cook (optional)", exact: true }).fill("Roasting made the difference.");
   await finish.getByRole("button", { name: "Save completed cook", exact: true }).click();
-  await expect(page.getByText("Another one for the cookbook.", { exact: true })).toBeVisible();
-  expect(await getSession()).toMatchObject({ status: "completed", rating: 5, summary: "Roasting made the difference." });
-  await page.getByRole("link", { name: "Back to recipe", exact: true }).click();
-  await page.getByRole("tab", { name: "History", exact: true }).click();
-  await expect(page.getByRole("link").filter({ hasText: "Completed cook" })).toContainText("Roasting made the difference.");
+  await expect(page).toHaveURL(new RegExp(`/recipes/${recipe.id}$`));
+  expect(await getSession()).toMatchObject({ status: "completed", rating: 5, notes: [expect.objectContaining({ body: "Roasting made the difference." })] });
+  await page.getByRole("tab", { name: "Overview", exact: true }).click();
+  const pastCook = page.getByRole("tabpanel", { name: "Overview", exact: true }).locator(`a[href="/recipes/${recipe.id}?cook=${sessionId}"]`);
+  await expect(pastCook).toContainText("Notes");
+  await expect(pastCook).not.toContainText("Roasting made the difference.");
+  await page.locator("summary").filter({ hasText: /^Version history/ }).click();
   await expect(page.getByRole("heading", { name: "Every version, kept.", exact: true })).toBeVisible();
 });
 
@@ -120,12 +122,14 @@ test("cooking boundaries reject cross-user and stale writes; ending early keeps 
     expect((await outsider.request.get(`/api/recipes/${recipe.id}/cooks`)).status()).toBe(404);
   } finally { await outsider.close(); }
   await page.goto(`/recipes/${recipe.id}?cook=${session.id}`);
-  await page.getByRole("button", { name: "End cook early", exact: true }).click();
-  const end = page.getByRole("dialog", { name: "End this cook?", exact: true });
-  await end.getByRole("textbox", { name: "Summary (optional)", exact: true }).fill("Ran out of carrots.");
-  await end.getByRole("button", { name: "Save and end", exact: true }).click();
-  await expect(page.getByText("Saved for your cooking history.", { exact: true })).toBeVisible();
-  expect(await (await page.request.get(`/api/cooking-sessions/${session.id}`)).json()).toMatchObject({ status: "abandoned", summary: "Ran out of carrots.", progress });
+  await page.getByRole("button", { name: "Stop cooking", exact: true }).click();
+  const end = page.getByRole("dialog", { name: "Stop cooking?", exact: true });
+  await end.getByText("Add notes (optional)", { exact: true }).click();
+  await end.getByRole("textbox", { name: "Notes from this cook (optional)", exact: true }).fill("Ran out of carrots.");
+  await end.getByRole("button", { name: "Save cook", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/recipes/${recipe.id}$`));
+  expect(await (await page.request.get(`/api/cooking-sessions/${session.id}`)).json()).toMatchObject({ status: "abandoned", notes: [expect.objectContaining({ body: "Ran out of carrots." })], progress });
+  await page.goto(`/recipes/${recipe.id}?cook=${session.id}`);
   await page.getByRole("tab", { name: "Cook notes", exact: true }).click();
   await page.getByRole("textbox", { name: "Cooking note", exact: true }).fill("Buy extra carrots next time.");
   await page.getByRole("button", { name: "Add cooking note", exact: true }).click();

@@ -1,0 +1,11 @@
+.empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 245px; padding: 30px 22px; border: 1px solid color-mix(in srgb, var(--foreground) 7%, transparent); border-radius: 22px; background: color-mix(in srgb, var(--muted) 35%, transparent); text-align: center; }
+.icon { display: grid; place-items: center; width: 54px; height: 54px; margin-bottom: 18px; border-radius: 50%; background: var(--muted); color: var(--muted-foreground); }
+.empty .heading { margin: 0; font-family: Georgia, 'Times New Roman', serif; font-size: 27px; font-weight: 400; line-height: 1.2; letter-spacing: -.025em; color: var(--foreground); }
+.description { max-width: 34ch; margin-top: 12px; font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty; }
+@media (max-height: 800px) { .empty { min-height: 205px; padding-block: 22px; } .icon { width: 46px; height: 46px; margin-bottom: 12px; } .empty .heading { font-size: 25px; } }
+.cookCard { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 72px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--muted) 25%, transparent); transition: background 150ms; }
+.cookCard:hover { background: var(--muted); }
+.cookCard:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+.cookInfo { display: flex; flex-direction: column; gap: 5px; }
+.cookMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; color: var(--muted-foreground); font-size: 12px; }
+.notesLabel { display: inline-flex; align-items: center; gap: 5px; }

@@ -13,7 +13,8 @@ async function signUp(request: APIRequestContext) {
 async function openSift(page: Page) {
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   const panel = page.getByRole("dialog", { name: "sift", exact: true });
-  await expect(panel.getByRole("button", { name: /^Assistant model: / })).toBeVisible();
+  await page.getByRole("button", { name: "Conversation settings", exact: true }).click();
+  await expect(page.getByRole("button", { name: /^Assistant model: / })).toBeVisible();
   return panel;
 }
 async function currentConversation(request: APIRequestContext) {
@@ -31,49 +32,54 @@ test("model selection persists per conversation through reload and history, and 
   const defaultLabel = models.options.find((option) => option.id === models.defaultId)?.label ?? models.defaultId;
   expect(models.options).toEqual(expect.arrayContaining([expect.objectContaining({ id: haiku, label: "Claude Haiku 4.5" })]));
   await page.goto("/library");
-  let panel = await openSift(page);
-  await panel.getByRole("button", { name: `Assistant model: ${defaultLabel}`, exact: true }).click();
+  await openSift(page);
+  await page.getByRole("button", { name: `Assistant model: ${defaultLabel}`, exact: true }).click();
   await expect(page.getByRole("menuitemradio", { name: "App default", exact: true })).toBeChecked();
   await page.getByRole("menuitemradio", { name: /^Claude Haiku 4\.5/ }).click();
-  await expect(panel.getByRole("button", { name: "Assistant model: Claude Haiku 4.5", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Assistant model: Claude Haiku 4.5", exact: true })).toBeEnabled();
   const id = await currentConversation(page.request);
   expect((await (await page.request.get(`/api/conversations/${id}`)).json()).modelId).toBe(haiku);
   expect((await page.request.patch(`/api/conversations/${id}`, { headers, data: { title: "Quick dinner ideas" } })).ok()).toBe(true);
   await page.reload();
-  panel = await openSift(page);
-  await expect(panel.getByRole("button", { name: "Assistant model: Claude Haiku 4.5", exact: true })).toBeEnabled();
-  await panel.getByRole("button", { name: "New conversation", exact: true }).click();
-  await expect(panel.getByRole("button", { name: `Assistant model: ${defaultLabel}`, exact: true })).toBeEnabled();
-  await panel.getByRole("button", { name: "Conversation history", exact: true }).click();
+  await openSift(page);
+  await expect(page.getByRole("button", { name: "Assistant model: Claude Haiku 4.5", exact: true })).toBeEnabled();
+  await page.getByRole("dialog", { name: "Conversation settings", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "New conversation", exact: true }).click();
+  await page.getByRole("button", { name: "Conversation settings", exact: true }).click();
+  await expect(page.getByRole("button", { name: `Assistant model: ${defaultLabel}`, exact: true })).toBeEnabled();
+  await page.getByRole("dialog", { name: "Conversation settings", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Conversation history", exact: true }).click();
   await page.getByRole("menuitem", { name: /Quick dinner ideas/ }).click();
-  await panel.getByRole("button", { name: "Assistant model: Claude Haiku 4.5", exact: true }).click();
+  await page.getByRole("button", { name: "Conversation settings", exact: true }).click();
+  await page.getByRole("button", { name: "Assistant model: Claude Haiku 4.5", exact: true }).click();
   await expect(page.getByRole("menuitemradio", { name: /^Claude Haiku 4\.5/ })).toBeChecked();
   await page.screenshot({ path: `test-results/model-selector-${testInfo.project.name}.png` });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("menuitemradio", { name: "App default", exact: true }).click();
-  await expect(panel.getByRole("button", { name: `Assistant model: ${defaultLabel}`, exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: `Assistant model: ${defaultLabel}`, exact: true })).toBeEnabled();
   expect((await (await page.request.get(`/api/conversations/${id}`)).json()).modelId).toBeNull();
 });
 
 test("a rejected model change shows its error and reconciles the saved choice without overwriting another window", async ({ page }, testInfo) => {
   await signUp(page.request);
   await page.goto("/library");
-  const panel = await openSift(page), id = await currentConversation(page.request);
-  await expect(panel.getByRole("button", { name: /^Assistant model: Claude / })).toBeEnabled();
+  await openSift(page);
+  const id = await currentConversation(page.request);
+  await expect(page.getByRole("button", { name: /^Assistant model: Claude / })).toBeEnabled();
   // Simulate a second window's real save while this panel still has the default.
   expect((await page.request.patch(`/api/conversations/${id}/model`, { headers, data: { modelId: sonnet, expectedModelId: null } })).status()).toBe(200);
-  await panel.getByRole("button", { name: /^Assistant model: / }).click();
+  await page.getByRole("button", { name: /^Assistant model: / }).click();
   const rejected = page.waitForResponse((response) => response.url().endsWith(`/api/conversations/${id}/model`) && response.request().method() === "PATCH");
   await page.getByRole("menuitemradio", { name: /^Claude Haiku 4\.5/ }).click();
   expect((await rejected).status()).toBe(409);
-  await expect(panel.getByRole("alert").filter({ hasText: "The model changed in another window" })).toBeVisible();
-  await expect(panel.getByRole("button", { name: "Assistant model: Claude Sonnet 5.5", exact: true })).toBeEnabled();
+  await expect(page.getByRole("dialog", { name: "Conversation settings", exact: true }).getByRole("alert").filter({ hasText: "The model changed in another window" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Assistant model: Claude Sonnet 5.5", exact: true })).toBeEnabled();
   await page.screenshot({ path: `test-results/model-conflict-${testInfo.project.name}.png` });
   expect((await (await page.request.get(`/api/conversations/${id}`)).json()).modelId).toBe(sonnet);
-  await panel.getByRole("button", { name: "Assistant model: Claude Sonnet 5.5", exact: true }).click();
+  await page.getByRole("button", { name: "Assistant model: Claude Sonnet 5.5", exact: true }).click();
   await page.getByRole("menuitemradio", { name: /^Claude Haiku 4\.5/ }).click();
-  await expect(panel.getByRole("button", { name: "Assistant model: Claude Haiku 4.5", exact: true })).toBeEnabled();
-  await expect(panel.getByRole("alert").filter({ hasText: "The model changed in another window" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Assistant model: Claude Haiku 4.5", exact: true })).toBeEnabled();
+  await expect(page.getByRole("dialog", { name: "Conversation settings", exact: true }).getByRole("alert").filter({ hasText: "The model changed in another window" })).toHaveCount(0);
   expect((await (await page.request.get(`/api/conversations/${id}`)).json()).modelId).toBe(haiku);
 });
 
@@ -102,11 +108,11 @@ test("model updates enforce ownership, allowed models, revisions and active repl
     expect((await page.request.patch(path, { headers, data: change })).status()).toBe(409);
     await page.goto("/library");
     let panel = await openSift(page);
-    await expect(panel.getByRole("button", { name: /^Assistant model: Claude / })).toBeDisabled();
+    await expect(page.getByRole("button", { name: /^Assistant model: Claude / })).toBeDisabled();
     await pool.query("UPDATE conversations SET active_run_id=NULL,lease_expires_at=NULL WHERE id=$1", [id]);
     await page.reload();
     panel = await openSift(page);
-    await expect(panel.getByRole("button", { name: /^Assistant model: Claude / })).toBeEnabled();
+    await expect(page.getByRole("button", { name: /^Assistant model: Claude / })).toBeEnabled();
     // Another window receives a confirmation after this panel loaded. A failed
     // model save must reconcile the live chat's approval state as well as its DTO.
     const messages: UIMessage[] = [{ id: crypto.randomUUID(), role: "assistant", parts: [{ type: "tool-archiveRecipe", toolCallId: "pending-archive", state: "approval-requested", input: { recipeId: crypto.randomUUID(), expectedVersionId: crypto.randomUUID() }, approval: { id: "pending-approval", requestReason: "Archive this recipe?" } }] }];
@@ -114,10 +120,12 @@ test("model updates enforce ownership, allowed models, revisions and active repl
     const response = await page.request.patch(path, { headers, data: change });
     expect(response.status()).toBe(409);
     expect(await response.json()).toMatchObject({ error: "Approve or decline the pending action before changing models." });
-    await panel.getByRole("button", { name: /^Assistant model: Claude / }).click();
+    await page.getByRole("button", { name: /^Assistant model: Claude / }).click();
     await page.getByRole("menuitemradio", { name: /^Claude Haiku 4\.5/ }).click();
+    await page.getByRole("dialog", { name: "Conversation settings", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
     await expect(panel.getByText("Archive this recipe?", { exact: true })).toBeVisible();
-    await expect(panel.getByRole("button", { name: /^Assistant model: Claude / })).toBeDisabled();
+    await page.getByRole("button", { name: "Conversation settings", exact: true }).click();
+    await expect(page.getByRole("button", { name: /^Assistant model: Claude / })).toBeDisabled();
     expect((await (await page.request.get(`/api/conversations/${id}`)).json()).modelId).toBeNull();
   } finally { await pool.end(); }
 });

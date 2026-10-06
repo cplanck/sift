@@ -6,6 +6,7 @@ import { recipeImports } from "@/db/schema";
 import { DomainError } from "@/domain/errors";
 import { importInputSchema, parsePastedRecipe } from "@/domain/import";
 import { recipeContentSchema, type RecipeContent, type RecipeSource } from "@/domain/recipe";
+import { withStepIllustrations } from "@/domain/step-illustrations";
 import { validateImportUrl } from "@/lib/safe-fetch";
 import { inngest, requireJobs } from "@/jobs/client";
 import { assertMembership, type Actor } from "./workspaces";
@@ -84,7 +85,7 @@ export async function approveImport(db: Database, actor: Actor, id: string, inpu
     if (!record || !record.recipeId) throw new DomainError("NOT_FOUND", "Import draft not found.");
     if (record.status === "saved") {
       const saved = await getRecipe(tx, actor, record.recipeId);
-      if (!isDeepStrictEqual(saved.version.content, data.content)) throw new DomainError("CONFLICT", "This import was already approved with different corrections. Open the saved recipe to review it.");
+      if (!isDeepStrictEqual(withStepIllustrations(saved.version.content), withStepIllustrations(data.content))) throw new DomainError("CONFLICT", "This import was already approved with different corrections. Open the saved recipe to review it.");
       return { recipeId: record.recipeId };
     }
     if (record.status !== "review") throw new DomainError("INVALID_INPUT", "This import is not ready for review.");

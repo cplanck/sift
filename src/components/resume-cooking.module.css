@@ -16,3 +16,5 @@
 @media (min-width: 640px) { .card { right: auto; left: 2rem; bottom: max(1.5rem, env(safe-area-inset-bottom)); width: 26rem; } }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .card { animation: none; } }
+
+@media (max-width: 639px) { .card { bottom: var(--mobile-nav-clearance); } }

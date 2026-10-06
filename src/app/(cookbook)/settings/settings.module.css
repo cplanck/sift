@@ -1,0 +1,16 @@
+.usage { max-height: 65dvh; overflow: auto; border: 1px solid var(--border); border-radius: 16px; }
+.table { width: 100%; min-width: 980px; text-align: left; font-size: 14px; }
+@media (max-width: 639px) {
+  .usage { max-height: none; overflow: visible; border: 0; }
+  .table { display: block; min-width: 0; }
+  .table caption, .table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .table tbody { display: grid; gap: 14px; }
+  .table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; padding: 18px; border: 1px solid var(--border); border-radius: 16px; }
+  .table td { display: block; min-width: 0; max-width: none; padding: 0; white-space: normal; overflow-wrap: anywhere; }
+  .table td::before { content: attr(data-label); display: block; margin-bottom: 5px; font-size: 11px; color: var(--muted-foreground); font-weight: 400; }
+  .table td:nth-child(1), .table td:nth-child(2), .table td:last-child { grid-column: 1 / -1; }
+  .table td:nth-child(2) { order: -1; font-size: 16px; }
+  .table td:nth-child(2)::before { display: none; }
+  .table summary { padding-block: 4px; }
+  .table td[colspan] { padding-block: 16px; font-size: 13px; line-height: 1.7; }
+}

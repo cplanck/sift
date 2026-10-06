@@ -1,16 +1,24 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { ArtifactDetail, MealEntryInput } from "@/domain/artifact";
+import type { ArtifactDetail, MealEntryInput, RemovedGroceryItem } from "@/domain/artifact";
 import { api } from "@/lib/client-http";
 
 export const ARTIFACT_CHANGED = "sift-artifact-changed";
 export type ArtifactAction =
+  | { action: "archive"; archived: boolean }
+  | { action: "updateItem"; itemId: string; text?: string; category?: string | null }
+  | { action: "restoreItems"; items: RemovedGroceryItem[] }
+  | { action: "clearChecked"; itemIds?: string[] }
+  | { action: "addRecipe"; recipeId: string; versionId: string; servings?: number }
+  | { action: "removeRecipe"; recipeId: string }
+  | { action: "updateRecipe"; recipeId: string; servings: number }
   | { action: "checkItem"; itemId: string; checked: boolean }
   | { action: "removeItem"; itemId: string }
-  | { action: "addItems"; groupName: string; items: { text: string }[] }
+  | { action: "addItems"; groupName: string; items: { text: string; category?: string | null }[] }
   | { action: "addEntry"; entry: MealEntryInput }
-  | { action: "removeEntry"; entryId: string };
+  | { action: "removeEntry"; entryId: string }
+  | { action: "combine" };
 
 export function useArtifact(initial: ArtifactDetail, refreshOnMount = false) {
   const [artifact, setArtifact] = useState(initial), [source, setSource] = useState(initial), [busy, setBusy] = useState(false), [error, setError] = useState("");

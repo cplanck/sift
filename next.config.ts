@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // Reuse recently visited pages in this browser; mutations explicitly refresh.
+  // Keep this short because cooking progress can also change on another device.
+  experimental: { staleTimes: { dynamic: 60, static: 60 } },
   async headers() {
     return [
       { source: "/:path*", headers: [

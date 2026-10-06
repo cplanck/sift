@@ -68,9 +68,10 @@ async function prepare(page: Page) {
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   // Opening the picker before the conversation-keyed panel remount used to
   // close it unexpectedly. Keep the input disabled until loading settles.
-  await expect(page.getByRole("button", { name: "Microphone settings", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Conversation settings", exact: true })).toBeDisabled();
   releaseHistory();
-  await page.getByRole("button", { name: "Microphone settings", exact: true }).click();
+  await page.getByRole("button", { name: "Conversation settings", exact: true }).click();
+  await page.getByRole("button", { name: "Microphone & speaker", exact: true }).click();
   return page.getByRole("dialog", { name: "Microphone & speaker", exact: true });
 }
 
@@ -126,7 +127,8 @@ test("microphone choice persists, local meter releases capture, and voice uses t
   expect(await page.evaluate(() => (window as unknown as MicWindow).micQa.closed)).toBe(2);
   await page.reload();
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
-  await page.getByRole("button", { name: "Microphone settings", exact: true }).click();
+  await page.getByRole("button", { name: "Conversation settings", exact: true }).click();
+  await page.getByRole("button", { name: "Microphone & speaker", exact: true }).click();
   await expect(picker).toHaveText("Saved microphone (not listed)");
   expect(await page.evaluate(() => localStorage.getItem("sift.microphone.v1"))).toBe("usb-mic");
   await expect(dialog.getByText(/saved input may be disconnected or need permission/)).toBeVisible();
@@ -135,6 +137,7 @@ test("microphone choice persists, local meter releases capture, and voice uses t
   // Stop at Sift's provider boundary after verifying the actual selected capture
   // constraint. Never mint a token or connect a paid ElevenLabs session in QA.
   await page.route("**/api/voice/sessions", (route) => route.fulfill({ status: 503, json: { error: "Provider boundary stopped by browser QA." } }));
+  await page.getByRole("dialog", { name: "Conversation settings", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "Talk to Sift", exact: true }).click();
   await page.getByRole("button", { name: "Voice controls", exact: true }).click();
   await expect(page.getByRole("region", { name: "Sift voice", exact: true }).getByRole("alert")).toHaveText("Provider boundary stopped by browser QA.");
@@ -154,7 +157,7 @@ test("closing microphone settings cancels pending permission and stops a late st
   await page.evaluate(() => (window as unknown as MicWindow).micQa.resolve?.());
   await expect.poll(() => page.evaluate(() => (window as unknown as MicWindow).micQa.stopped)).toBe(1);
   expect(await page.evaluate(() => (window as unknown as MicWindow).micQa.closed)).toBe(1);
-  await page.getByRole("button", { name: "Microphone settings", exact: true }).click();
+  await page.getByRole("button", { name: "Microphone & speaker", exact: true }).click();
   await expect(dialog.getByRole("status")).toHaveText("Microphone off");
   await expect(dialog.getByRole("button", { name: "Test microphone", exact: true })).toBeEnabled();
 });
@@ -212,7 +215,7 @@ test("speaker choice persists and the local sound uses only that output", async 
   await expect(page.locator("audio[data-sift-speaker-test]")).toHaveCount(0);
   expect(await page.evaluate(() => (window as unknown as MicWindow).micQa.outputStopped)).toBe(1);
   expect(await page.evaluate(() => (window as unknown as MicWindow).micQa.closed)).toBe(1);
-  await page.getByRole("button", { name: "Microphone settings", exact: true }).click();
+  await page.getByRole("button", { name: "Microphone & speaker", exact: true }).click();
   await picker.focus(); await picker.press("ArrowDown");
   await expect(page.getByRole("menuitemradio", { name: "Kitchen headphones", exact: true })).toBeVisible();
   await page.keyboard.press("End");
@@ -227,7 +230,8 @@ test("speaker choice persists and the local sound uses only that output", async 
   expect(voiceRequests).toBe(0);
   await page.reload();
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
-  await page.getByRole("button", { name: "Microphone settings", exact: true }).click();
+  await page.getByRole("button", { name: "Conversation settings", exact: true }).click();
+  await page.getByRole("button", { name: "Microphone & speaker", exact: true }).click();
   await expect(picker).toHaveText("Saved speaker (not listed)");
   expect(await page.evaluate(() => localStorage.getItem("sift.speaker.v1"))).toBe("headphones");
 });
@@ -251,7 +255,7 @@ test("speaker permission is explicit, failures never fall back, and closing canc
   await expect(page.locator("audio[data-sift-speaker-test]")).toHaveCount(0);
   expect(await page.evaluate(() => (window as unknown as MicWindow).micQa.speakerPlays)).toEqual([]);
   expect(await page.evaluate(() => (window as unknown as MicWindow).micQa.outputStopped)).toBe(2);
-  await page.getByRole("button", { name: "Microphone settings", exact: true }).click();
+  await page.getByRole("button", { name: "Microphone & speaker", exact: true }).click();
   await picker.click();
   await page.getByRole("menuitemradio", { name: "System default", exact: true }).click();
   await output.getByRole("button", { name: "Play test sound", exact: true }).click();
@@ -281,6 +285,8 @@ test("devices stay selectable during voice startup and audio settings can end it
   const voice = page.getByRole("region", { name: "Sift voice", exact: true });
   try {
     for (const action of ["microphone", "speaker", "end"] as const) {
+      const settings = page.getByRole("dialog", { name: "Conversation settings", exact: true });
+      if (await settings.isVisible()) await settings.getByRole("button", { name: "Close", exact: true }).click();
       await page.getByRole("button", { name: "Talk to Sift", exact: true }).click();
       await page.getByRole("button", { name: "Voice controls", exact: true }).click();
       await expect(voice.getByRole("status")).toHaveText("Getting voice ready…");

@@ -1,21 +1,24 @@
 "use client";
-import { useState } from "react";
-import { Check, Copy, Link as LinkIcon, LoaderCircle, Share2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, Copy, Link as LinkIcon, LoaderCircle } from "lucide-react";
 import { api } from "@/lib/client-http";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 
 type Share = { id: string; createdAt: string; versionId: string };
-export function ShareRecipe({ recipeId, versionId, versionNumber, coverPhotoId }: { recipeId: string; versionId: string; versionNumber: number; coverPhotoId: string | null }) {
-  const [links, setLinks] = useState<Share[]>([]), [created, setCreated] = useState<{ id: string; url: string } | null>(null), [error, setError] = useState(""), [busy, setBusy] = useState(false), [loading, setLoading] = useState(false), [copied, setCopied] = useState(false), [revoking, setRevoking] = useState<string | null>(null);
-  return <Dialog onOpenChange={async (open) => {
-    if (!open) return;
-    setError(""); setCopied(false); setRevoking(null); setLoading(true);
-    try { setLinks(await api<Share[]>(`/api/recipes/${recipeId}/shares`)); }
-    catch (error) { setError(error instanceof Error ? error.message : "Couldn’t load share links."); }
-    finally { setLoading(false); }
-  }}><DialogTrigger asChild><Button variant="outline" size="sm"><Share2 />Share</Button></DialogTrigger>
+// Mounted only while open, so each opening starts fresh and loads the current links.
+export function ShareRecipe({ recipeId, versionId, versionNumber, coverPhotoId, onClose }: { recipeId: string; versionId: string; versionNumber: number; coverPhotoId: string | null; onClose: () => void }) {
+  const [links, setLinks] = useState<Share[]>([]), [created, setCreated] = useState<{ id: string; url: string } | null>(null), [error, setError] = useState(""), [busy, setBusy] = useState(false), [loading, setLoading] = useState(true), [copied, setCopied] = useState(false), [revoking, setRevoking] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    api<Share[]>(`/api/recipes/${recipeId}/shares`)
+      .then((result) => { if (current) setLinks(result); })
+      .catch((error) => { if (current) setError(error instanceof Error ? error.message : "Couldn’t load share links."); })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [recipeId]);
+  return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
     <DialogContent className="max-h-[90dvh] overflow-y-auto"><DialogHeader><DialogTitle>Share this recipe.</DialogTitle><DialogDescription>Anyone with the link can read this saved version and its cover photo. Your notes and history stay private.</DialogDescription></DialogHeader>
       <div className="rounded-xl border bg-muted/30 p-4"><p className="text-sm font-medium">Version {versionNumber}</p><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Changes you make later won’t change this link. You can revoke access at any time.</p><Button className="mt-4" disabled={busy || loading} onClick={async () => {
         setBusy(true); setError(""); setCopied(false);

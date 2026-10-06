@@ -24,7 +24,7 @@ describe("lossless quantities and deterministic scaling", () => {
 });
 
 it("ranks title exact, prefix, substring, tags, ingredients, then notes", () => {
-  const base: RecipeSummary = { id: "", versionId: "", title: "", description: "", tags: [], collections: [], ingredientsText: "", notesText: "", totalMinutes: null, status: "active", favorite: false, updatedAt: "2026-01-01", coverPhotoId: null };
+  const base: RecipeSummary = { id: "", versionId: "", title: "", description: "", tags: [], collections: [], ingredientsText: "", notesText: "", totalMinutes: null, status: "active", favorite: false, planned: false, updatedAt: "2026-01-01", coverPhotoId: null };
   const values = [
     { id: "notes", title: "Soup", notesText: "Turkey was good" },
     { id: "ingredient", title: "Meatballs", ingredientsText: "1 lb turkey" },

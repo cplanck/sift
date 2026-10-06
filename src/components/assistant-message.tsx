@@ -9,29 +9,27 @@ import { Button } from "./ui/button";
 import { ArtifactCard, artifactPreviewSchema } from "./artifact-card";
 import { AssistantMarkdown } from "./assistant-markdown";
 import { AssistantActivity } from "./assistant-thinking";
-import { SiftMark } from "./brand";
 
 const toolLabels: Record<string, string> = {
-  listArtifacts: "Finding your lists and plans", getArtifact: "Reading your list or plan", createGroceryList: "Making your grocery list", deriveGroceryList: "Gathering recipe ingredients", addGroceryItems: "Adding grocery items", removeGroceryItem: "Removing an item", setGroceryItemChecked: "Updating your checklist", createMealPlan: "Making your meal plan", addMealPlanEntry: "Adding a meal", removeMealPlanEntry: "Removing a meal",
+  addShoppingRecipe: "Adding recipe to your list", removeShoppingRecipe: "Removing recipe from your list", updateShoppingRecipe: "Updating list servings", listArtifacts: "Finding your shopping lists", getArtifact: "Reading your list or plan", createGroceryList: "Making your grocery list", deriveGroceryList: "Gathering recipe ingredients", addGroceryItems: "Adding grocery items", removeGroceryItem: "Removing an item", setGroceryItemChecked: "Updating your checklist", createMealPlan: "Making your meal plan", addMealPlanEntry: "Adding a meal", removeMealPlanEntry: "Removing a meal",
+  createCookingTimer: "Starting a timer", updateCookingTimer: "Updating your timer", listCookingTimers: "Reading your timers",
   startCookingSession: "Starting your cook", getCookingSession: "Reading this cook", updateCookingProgress: "Saving cooking progress", finishCookingSession: "Finishing your cook", abandonCookingSession: "Ending your cook", addCookingSessionNote: "Saving your cooking note", listCookingHistory: "Reading cooking history", searchRecipes: "Looking through your cookbook", getRecipe: "Reading the recipe", createRecipe: "Saving a recipe", updateRecipe: "Updating the recipe", archiveRecipe: "Archiving the recipe", restoreArchivedRecipe: "Returning the recipe to your Library", restoreRecipeVersion: "Restoring a version", listRecipeVersions: "Reading version history", listRecipeNotes: "Reading recipe notes", addRecipeNote: "Saving your observation", setRecipeFavorite: "Updating your favorites",
-  updateMealPlanEntry: "Updating a meal", updateGroceryItem: "Editing an item", clearCheckedGroceryItems: "Clearing checked items", renameArtifact: "Renaming", deleteArtifact: "Deleting",
+  updateMealPlanEntry: "Updating a meal", updateGroceryItem: "Editing an item", categorizeGroceryItems: "Organizing categories", setShoppingListArchived: "Updating list archive", clearCheckedGroceryItems: "Clearing checked items", renameArtifact: "Renaming", deleteArtifact: "Deleting",
   webSearch: "Searching the web", readWebPage: "Reading the page", importRecipe: "Importing the recipe", listImports: "Checking your imports", getImportDraft: "Reading the import", approveImportDraft: "Saving the import",
   navigate: "Opening the page", findActiveCooks: "Finding your cooks", tagRecipes: "Organizing recipes", setRecipeFavorites: "Updating your favorites", scaleRecipe: "Scaling the recipe",
+  generateRecipeCover: "Requesting a cover", getRecipeCoverStatus: "Checking covers", removeRecipeCover: "Removing the cover",
   listRecipePhotos: "Looking at photos", setRecipeCoverPhoto: "Setting the cover photo", addPhotoToRecipe: "Adding the photo", addPhotoToCook: "Adding the photo to your cook", createShareLink: "Creating a share link", listShareLinks: "Checking share links", revokeShareLink: "Turning off the link", getAiUsage: "Adding up your usage",
 };
 const completedLabels: Record<string, string> = {
-  listArtifacts: "Lists and plans found", getArtifact: "List or plan read", createGroceryList: "Grocery list saved", deriveGroceryList: "Grocery list saved", addGroceryItems: "Grocery items added", removeGroceryItem: "Grocery item removed", setGroceryItemChecked: "Checklist saved", createMealPlan: "Meal plan saved", addMealPlanEntry: "Meal added", removeMealPlanEntry: "Meal removed",
+  addShoppingRecipe: "Recipe added to list", removeShoppingRecipe: "Recipe removed from list", updateShoppingRecipe: "List servings updated", listArtifacts: "Shopping lists found", getArtifact: "List or plan read", createGroceryList: "Grocery list saved", deriveGroceryList: "Grocery list saved", addGroceryItems: "Grocery items added", removeGroceryItem: "Grocery item removed", setGroceryItemChecked: "Checklist saved", createMealPlan: "Meal plan saved", addMealPlanEntry: "Meal added", removeMealPlanEntry: "Meal removed",
+  createCookingTimer: "Timer started", updateCookingTimer: "Timer updated", listCookingTimers: "Timers read",
   startCookingSession: "Cook started", getCookingSession: "Cook read", updateCookingProgress: "Cooking progress saved", finishCookingSession: "Cook finished", abandonCookingSession: "Cook ended", addCookingSessionNote: "Cooking note saved", listCookingHistory: "Cooking history read", searchRecipes: "Searched your cookbook", getRecipe: "Read the recipe", createRecipe: "Recipe saved", updateRecipe: "Recipe updated", archiveRecipe: "Recipe archived", restoreArchivedRecipe: "Recipe returned to Library", restoreRecipeVersion: "Version restored", listRecipeVersions: "Read version history", listRecipeNotes: "Read recipe notes", addRecipeNote: "Observation saved", setRecipeFavorite: "Favorites updated",
-  updateMealPlanEntry: "Meal updated", updateGroceryItem: "Item updated", clearCheckedGroceryItems: "Checked items cleared", renameArtifact: "Renamed", deleteArtifact: "Deleted",
+  updateMealPlanEntry: "Meal updated", updateGroceryItem: "Item updated", categorizeGroceryItems: "Categories updated", setShoppingListArchived: "List archive updated", clearCheckedGroceryItems: "Checked items cleared", renameArtifact: "Renamed", deleteArtifact: "Deleted",
   webSearch: "Searched the web", readWebPage: "Read a web page", importRecipe: "Import started", listImports: "Checked imports", getImportDraft: "Read the import", approveImportDraft: "Import saved to your Library",
   navigate: "Opened the page", findActiveCooks: "Checked your cooks", tagRecipes: "Recipes organized", setRecipeFavorites: "Favorites updated", scaleRecipe: "Scaled ingredients",
+  generateRecipeCover: "Cover requested", getRecipeCoverStatus: "Checked covers", removeRecipeCover: "Cover removed",
   listRecipePhotos: "Looked at photos", setRecipeCoverPhoto: "Cover photo set", addPhotoToRecipe: "Photo added to the recipe", addPhotoToCook: "Photo added to your cook", createShareLink: "Share link created", listShareLinks: "Checked share links", revokeShareLink: "Share link turned off", getAiUsage: "Usage totals",
 };
-// Lookups are the agent's working steps, not results. They fold into one
-// expandable line, like other assistants' "used N tools", once finished.
-const lookups = new Set(["listArtifacts", "getArtifact", "getCookingSession", "listCookingHistory", "searchRecipes", "getRecipe", "listRecipeVersions", "listRecipeNotes",
-  "webSearch", "readWebPage", "listImports", "getImportDraft", "navigate", "findActiveCooks", "listRecipePhotos", "listShareLinks"]);
-
 const approvalLabels: Record<string, [string, string]> = {
   createRecipe: ["Save recipe", "Don’t save"], abandonCookingSession: ["End this cook", "Keep cooking"], archiveRecipe: ["Confirm archive", "Keep recipe"],
   deleteArtifact: ["Delete", "Keep it"], revokeShareLink: ["Turn off link", "Keep link"],
@@ -56,19 +54,6 @@ function ToolIcon({ name, className = "size-3.5 shrink-0" }: { name: string; cla
 // Sift's tools return { ok }; provider-run tools (web search) return { results } or { error }.
 const succeeded = (part: ToolPart) => part.state === "output-available" && !!part.output && typeof part.output === "object" && ("ok" in part.output ? part.output.ok === true : !("error" in part.output));
 
-type Segment = { kind: "part"; part: Part; index: number } | { kind: "lookups"; parts: { part: ToolPart; index: number }[] };
-function segments(parts: Part[], messageId: string, liveArtifactReceipts: ReadonlySet<string>) {
-  const result: Segment[] = [];
-  parts.forEach((part, index) => {
-    if (isToolUIPart(part) && lookups.has(toolName(part)) && succeeded(part) && !liveArtifactReceipts.has(`${messageId}:${index}`)) {
-      const last = result.at(-1);
-      if (last?.kind === "lookups") last.parts.push({ part, index });
-      else result.push({ kind: "lookups", parts: [{ part, index }] });
-    } else if (part.type === "text" || isToolUIPart(part)) result.push({ kind: "part", part, index });
-  });
-  return result;
-}
-
 type Props = { message: SiftUIMessage; busy: boolean; streaming?: boolean; animate?: boolean; liveArtifactReceipts: ReadonlySet<string>; onApproval: (id: string, approved: boolean) => void; onNavigate: () => void };
 
 export const AssistantMessage = memo(function AssistantMessage({ message, busy, streaming = false, animate = false, liveArtifactReceipts, onApproval, onNavigate }: Props) {
@@ -90,18 +75,21 @@ export const AssistantMessage = memo(function AssistantMessage({ message, busy, 
   const visible = message.parts.filter((part) => part.type === "text" ? !!part.text : isToolUIPart(part));
   const last = visible.at(-1);
   const lastTextIndex = message.parts.findLastIndex((part) => part.type === "text");
-  // While a reply streams, exactly one place shows activity: the running
-  // tool's own line, the text cursor, or a trailing "Thinking…" between steps.
+  const tools = message.parts.flatMap((part, index) => isToolUIPart(part) ? [{ part, index }] : []);
+  const completed = tools.filter(({ part }) => succeeded(part));
+  const pending = tools.filter(({ part }) => !succeeded(part));
+  const receipts = completed.filter(({ part, index }) => liveArtifactReceipts.has(`${message.id}:${index}`) && artifactPreviewSchema.safeParse(part.output).success);
+  // All tool activity follows the answer; only useful result cards stay expanded.
   const trailing = streaming && (!last || (isToolUIPart(last) && (last.state === "output-available" || last.state === "output-error" || last.state === "output-denied")));
   return <article aria-label="Sift response" aria-busy={streaming} className={`sift-response ${animate ? "sift-enter" : ""}`}>
     <div className="min-w-0 space-y-3">
-      <p className="mb-2.5 flex items-center gap-1.5"><SiftMark className={`size-5 ${streaming ? "sift-pulse" : ""}`} /><span className="sr-only">Sift</span></p>
-      {segments(message.parts, message.id, liveArtifactReceipts).map((segment) => segment.kind === "lookups"
-        ? <LookupGroup key={segment.parts[0].part.toolCallId} parts={segment.parts} onNavigate={onNavigate} />
-        : segment.part.type === "text"
-          ? segment.part.text ? <AssistantMarkdown key={segment.index} text={segment.part.text} streaming={streaming && segment.index === lastTextIndex && last === segment.part} onNavigate={onNavigate} /> : null
-          : <ToolPartView key={(segment.part as ToolPart).toolCallId} part={segment.part as ToolPart} index={segment.index} messageId={message.id} busy={busy} streaming={streaming} liveArtifactReceipts={liveArtifactReceipts} onApproval={onApproval} onNavigate={onNavigate} />)}
+      <span className="sr-only">Sift</span>
+      {message.parts.map((part, index) => part.type === "text" && part.text
+        ? <AssistantMarkdown key={index} text={part.text} streaming={streaming && index === lastTextIndex && last === part} onNavigate={onNavigate} /> : null)}
+      {receipts.map(({ part, index }) => <ToolPartView key={part.toolCallId} part={part} index={index} messageId={message.id} busy={busy} streaming={streaming} liveArtifactReceipts={liveArtifactReceipts} onApproval={onApproval} onNavigate={onNavigate} />)}
+      {pending.map(({ part, index }) => <ToolPartView key={part.toolCallId} part={part} index={index} messageId={message.id} busy={busy} streaming={streaming} liveArtifactReceipts={liveArtifactReceipts} onApproval={onApproval} onNavigate={onNavigate} />)}
       {trailing && <AssistantActivity />}
+      {completed.length > 0 && <ActionSummary parts={completed} onNavigate={onNavigate} />}
       {text && !streaming && <div className="-ml-2 flex items-center pt-0.5"><Button variant="ghost" size="icon" aria-label={copied ? "Response copied" : "Copy response"} title={copied ? "Copied" : "Copy response"} className="size-8 rounded-lg text-muted-foreground/70 hover:text-foreground" onClick={async () => {
         try { await navigator.clipboard.writeText(text); setCopied(true); setCopyError(false); if (copyTimer.current) clearTimeout(copyTimer.current); copyTimer.current = setTimeout(() => setCopied(false), 2000); }
         catch { setCopyError(true); }
@@ -112,13 +100,12 @@ export const AssistantMessage = memo(function AssistantMessage({ message, busy, 
   && before.onApproval === after.onApproval && before.onNavigate === after.onNavigate
   && before.message.parts.every((_, index) => before.liveArtifactReceipts.has(`${before.message.id}:${index}`) === after.liveArtifactReceipts.has(`${after.message.id}:${index}`)));
 
-function LookupGroup({ parts, onNavigate }: { parts: { part: ToolPart; index: number }[]; onNavigate: () => void }) {
+function ActionSummary({ parts, onNavigate }: { parts: { part: ToolPart; index: number }[]; onNavigate: () => void }) {
   const [open, setOpen] = useState(false);
-  const names = parts.map(({ part }) => toolName(part));
-  const summary = names.length === 1 ? completedLabels[names[0]] ?? "Checked your cookbook" : `Checked your cookbook · ${names.length} steps`;
-  return <div className="text-[13px]">
+  const summary = `Performed ${parts.length} ${parts.length === 1 ? "action" : "actions"}`;
+  return <div className="text-xs">
     <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="-ml-1 flex min-h-8 items-center gap-2 rounded-lg px-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
-      <ToolIcon name={names[0]} />{summary}<ChevronDown className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+      {summary}<ChevronDown className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
     </button>
     {open && <div className="mt-2 space-y-3 border-l border-border pl-4">{parts.map(({ part }) => <div key={part.toolCallId} className="space-y-1.5">
       <p className="text-xs font-medium text-muted-foreground">{completedLabels[toolName(part)] ?? "Done"}</p>

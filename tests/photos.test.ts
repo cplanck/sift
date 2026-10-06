@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { inArray, like } from "drizzle-orm";
+import { eq, inArray, like } from "drizzle-orm";
 import sharp from "sharp";
 import { connectDatabase } from "@/db/connection";
 import { photos, recipes, usageLimits, users } from "@/db/schema";
 import { ensurePersonalWorkspace, type Actor } from "@/services/workspaces";
 import { createRecipe, getRecipe } from "@/services/recipes";
-import { finishPhotoUpload, getPhoto, listRecipePhotos, normalizePhoto, preparePhotoUpload, receivePhotoUpload, setCoverPhoto } from "@/services/photos";
+import { deleteRecipePhoto, finishPhotoUpload, getPhoto, listRecipePhotos, normalizePhoto, preparePhotoUpload, receivePhotoUpload, setCoverPhoto } from "@/services/photos";
 import { testDatabaseUrl } from "./database";
 
 // Only R2's external transport is mocked here. Authorization, transactions,
@@ -144,7 +144,7 @@ describe("photo services with real DB and isolated R2 transport", () => {
     await expect(setCoverPhoto(db, actorA, first.id, photo.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
     await finishPhotoUpload(db, actorA, photo.id);
     await expect(setCoverPhoto(db, actorA, second.id, photo.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(setCoverPhoto(db, actorA, first.id, photo.id)).resolves.toEqual({ coverPhotoId: photo.id });
+    await expect(setCoverPhoto(db, actorA, first.id, photo.id)).resolves.toMatchObject({ coverPhotoId: photo.id });
     expect((await getRecipe(db, actorA, second.id)).coverPhotoId).toBeNull();
   });
 
@@ -175,4 +175,21 @@ describe("photo services with real DB and isolated R2 transport", () => {
     await receivePhotoUpload(db, actorA, photo.id, png);
     expect(storage.writeUploadObject).not.toHaveBeenCalled();
   });
+});
+
+it("deletes a current cover and all its variants only inside the authorized workspace", async () => {
+  const recipe = await createRecipe(db, actorA, { content });
+  const pending = await pendingPhoto(actorA, recipe.id);
+  await finishPhotoUpload(db, actorA, pending.id);
+  await db.update(photos).set({ originalObjectKey: "test/original.png", derivatives: [{ objectKey: "test/320.webp", width: 320, height: 240 }] }).where(eq(photos.id, pending.id));
+  const photo = await getPhoto(db, actorA, pending.id), before = await getRecipe(db, actorA, recipe.id);
+  storage.deletePhotoObject.mockClear();
+  await expect(deleteRecipePhoto(db, actorB, photo.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  expect(storage.deletePhotoObject).not.toHaveBeenCalled();
+  await deleteRecipePhoto(db, actorA, photo.id);
+  await expect(getPhoto(db, actorA, photo.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  expect(await listRecipePhotos(db, actorA, recipe.id)).toHaveLength(0);
+  expect(await getRecipe(db, actorA, recipe.id)).toMatchObject({ coverPhotoId: null, coverSelection: "none", coverRevision: before.coverRevision + 1 });
+  expect(storage.deletePhotoObject.mock.calls.map(([key]) => key)).toEqual(expect.arrayContaining([photo.objectKey, "test/original.png", "test/320.webp"]));
+  await expect(setCoverPhoto(db, actorA, recipe.id, photo.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
 });

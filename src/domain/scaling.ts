@@ -36,6 +36,15 @@ const leadingMeasure = new RegExp(`^(?:${unitWords})(?=\\s|$)\\s*(?:of\\s+)?`, "
 const packageMeasure = new RegExp(`^\\(?${numberPattern}\\s*[-–]?\\s*(?:${unitWords})\\)?\\s+`, "i");
 const parentheticalMeasure = new RegExp(`\\(\\s*${numberPattern}\\s*[-–]?\\s*(?:${unitWords})\\s*\\)`, "gi");
 
+// The leading count and unit of an ingredient line, e.g. "1½ cups flour" → 1.5 "cups".
+// Ranges, package sizes ("1 14-oz can") and unitless counts return a null unit.
+export function ingredientMeasure(text: string): { value: number; unit: string | null; amountLength: number } | null {
+  const trimmed = text.trim(), match = trimmed.match(amountPattern), parsed = parseIngredient(trimmed);
+  if (!match || parsed.quantity?.kind !== "exact") return null;
+  const unit = trimmed.slice(match[0].length).trimStart().match(new RegExp(`^(?:${unitWords})(?=\\s|$)`, "i"));
+  return { value: parsed.quantity.value, unit: unit ? unit[0] : null, amountLength: match[0].length };
+}
+
 // A display-only label. Keep the original wording for quantities, alternatives,
 // preparation instructions, scaling, and recipe history.
 export function ingredientName(ingredient: Ingredient) {

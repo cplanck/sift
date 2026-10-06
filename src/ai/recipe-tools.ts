@@ -5,14 +5,16 @@ import type { Database } from "@/db/connection";
 import { DomainError } from "@/domain/errors";
 import { cookingFinishSchema, cookingNoteSchema, cookingProgressSchema, cookingStartSchema } from "@/domain/cooking";
 import { recipeContentSchema } from "@/domain/recipe";
-import { addGroceryItemsSchema, addMealEntrySchema, checkGroceryItemSchema, createArtifactSchema, deriveGrocerySchema, removeGroceryItemSchema, removeMealEntrySchema, renameArtifactSchema, updateGroceryItemSchema, updateMealEntrySchema, type ArtifactDetail } from "@/domain/artifact";
+import { setShoppingListArchivedSchema, categorizeGroceryItemsSchema, addShoppingRecipeSchema, removeShoppingRecipeSchema, updateShoppingRecipeSchema, addGroceryItemsSchema, addMealEntrySchema, checkGroceryItemSchema, createArtifactSchema, deriveGrocerySchema, removeGroceryItemSchema, removeMealEntrySchema, renameArtifactSchema, updateGroceryItemSchema, updateMealEntrySchema, type ArtifactDetail } from "@/domain/artifact";
+import { shoppingRecipes } from "@/domain/grocery";
 import { extractRecipeHtml } from "@/domain/import";
 import { scaleIngredient } from "@/domain/scaling";
 import { env } from "@/lib/env";
 import { fetchRecipeUrl } from "@/lib/safe-fetch";
 import { getUsageSummary } from "@/services/ai-usage";
-import { addGroceryItems, addMealPlanEntry, clearCheckedGroceryItems, createArtifact, deleteArtifact, deriveGroceryList, getArtifact, listArtifacts, removeGroceryItem, removeMealPlanEntry, renameArtifact, setGroceryItemChecked, updateGroceryItem, updateMealPlanEntry } from "@/services/artifacts";
+import { setShoppingListArchived, categorizeGroceryItems, addShoppingRecipe, removeShoppingRecipe, updateShoppingRecipe, addGroceryItems, addMealPlanEntry, clearCheckedGroceryItems, createArtifact, deleteArtifact, deriveGroceryList, getArtifact, listArtifacts, removeGroceryItem, removeMealPlanEntry, renameArtifact, setGroceryItemChecked, updateGroceryItem, updateMealPlanEntry } from "@/services/artifacts";
 import { approveImport, createImport, importReview, listPendingImports } from "@/services/imports";
+import { getRecipeCoverState, requestRecipeCover } from "@/services/cover-generation";
 import { attachChatPhoto, listRecipePhotos, setCoverPhoto } from "@/services/photos";
 import { consumeLimit } from "@/services/rate-limit";
 import { createRecipeShare, listRecipeShares, revokeRecipeShare } from "@/services/shares";
@@ -64,7 +66,7 @@ function recipeData(recipe: Awaited<ReturnType<typeof getRecipe>>) {
 }
 
 function artifactData(artifact: ArtifactDetail) {
-  return { artifactId: artifact.id, kind: artifact.kind, title: artifact.title, revision: artifact.revision };
+  return { artifactId: artifact.id, kind: artifact.kind, title: artifact.title, revision: artifact.revision, archivedAt: artifact.archivedAt ?? null };
 }
 
 function artifactPage(artifact: ArtifactDetail, offset: number, limit: number) {
@@ -87,7 +89,7 @@ function artifactPage(artifact: ArtifactDetail, offset: number, limit: number) {
       count++;
     }
     return { ...artifactData(artifact), offset, limit, total: rows.length, totalGroups: artifact.content.groups.length,
-      nextOffset: offset + count < rows.length ? offset + count : null, content: { kind: "grocery" as const, groups } };
+      nextOffset: offset + count < rows.length ? offset + count : null, content: { kind: "grocery" as const, archivedAt: artifact.content.archivedAt, groups, recipes: shoppingRecipes(artifact.content) } };
   }
   const entries: typeof artifact.content.entries = [];
   for (const entry of artifact.content.entries.slice(offset, offset + limit)) {
@@ -264,10 +266,10 @@ export function createRecipeTools(db: Database, actor: Actor, run: Run) {
       }),
     }),
     listArtifacts: tool({
-      description: "Find this cookbook's saved grocery lists and meal plans by title and optional kind. Use getArtifact to open one and read its current items or entries before changing it.",
-      inputSchema: z.object({ kind: z.enum(["grocery", "meal-plan"]).optional(), query: z.string().max(200).default(""), offset: z.number().int().min(0).max(10000).default(0), limit: z.number().int().min(1).max(30).default(20) }),
-      execute: async ({ kind, query, offset, limit }) => safely(async () => {
-        await authorize(); const artifacts = await listArtifacts(db, actor, { kind, query });
+      description: "Find active shopping lists by title and optional kind. Set includeArchived:true to also find archived lists for reference or restoration. Use getArtifact to open one and read its current items or entries before changing it.",
+      inputSchema: z.object({ includeArchived: z.boolean().default(false), kind: z.enum(["grocery", "meal-plan"]).optional(), query: z.string().max(200).default(""), offset: z.number().int().min(0).max(10000).default(0), limit: z.number().int().min(1).max(30).default(20) }),
+      execute: async ({ kind, query, offset, limit, includeArchived }) => safely(async () => {
+        await authorize(); const artifacts = await listArtifacts(db, actor, { kind, query, includeArchived });
         return { total: artifacts.length, offset, artifacts: artifacts.slice(offset, offset + limit).map((artifact) => ({ ...artifact, artifactId: artifact.id })) };
       }),
     }),
@@ -285,6 +287,21 @@ export function createRecipeTools(db: Database, actor: Actor, run: Run) {
       description: "Save a grocery list derived deterministically from exact saved recipe versions and optionally scaled servings. Read recipes or a saved meal plan first. Preserves original ingredient wording and package sizes, grouping by recipe/section instead of guessing incompatible unit conversions. Unreviewed imported drafts cannot be used.",
       inputSchema: deriveGrocerySchema,
       execute: async (input, { toolCallId }) => mutate("deriveGroceryList", toolCallId, async (tx) => artifactData(await deriveGroceryList(tx, actor, input))),
+    }),
+    addShoppingRecipe: tool({
+      description: "Add a saved recipe to an existing shopping list. Read the destination list and recipe first. Pass their exact revision/version and optional servings. Duplicate recipes are not added again. Matching ingredient quantities are combined; manual items are retained.",
+      inputSchema: addShoppingRecipeSchema.extend({ artifactId: z.uuid() }),
+      execute: async ({ artifactId, ...input }, { toolCallId }) => mutate("addShoppingRecipe", toolCallId, async (tx) => artifactData(await addShoppingRecipe(tx, actor, artifactId, input))),
+    }),
+    removeShoppingRecipe: tool({
+      description: "Remove a recipe from a shopping list and subtract only its ingredient contributions. Other recipes and manual items stay. Read the list first and pass its current revision.",
+      inputSchema: removeShoppingRecipeSchema.extend({ artifactId: z.uuid() }),
+      execute: async ({ artifactId, ...input }, { toolCallId }) => mutate("removeShoppingRecipe", toolCallId, async (tx) => artifactData(await removeShoppingRecipe(tx, actor, artifactId, input))),
+    }),
+    updateShoppingRecipe: tool({
+      description: "Change a recipe's servings within a shopping list and recompute its remaining ingredient quantities from the pinned version. Read the list first. This never changes the saved recipe or starts cooking.",
+      inputSchema: updateShoppingRecipeSchema.extend({ artifactId: z.uuid() }),
+      execute: async ({ artifactId, ...input }, { toolCallId }) => mutate("updateShoppingRecipe", toolCallId, async (tx) => artifactData(await updateShoppingRecipe(tx, actor, artifactId, input))),
     }),
     addGroceryItems: tool({
       description: "Add the requested grocery items to a named group, creating that group if needed. Read the list first and pass its current revision. Existing items and checkoffs remain unchanged.",
@@ -321,8 +338,18 @@ export function createRecipeTools(db: Database, actor: Actor, run: Run) {
       inputSchema: updateMealEntrySchema.extend({ artifactId: z.uuid() }),
       execute: async ({ artifactId, ...input }, { toolCallId }) => mutate("updateMealPlanEntry", toolCallId, async (tx) => artifactData(await updateMealPlanEntry(tx, actor, artifactId, input))),
     }),
+    setShoppingListArchived: tool({
+      description: "Archive a finished shopping list or restore it. Read the list first and pass its current revision. archived:true removes it from active lists and recipe destinations while preserving all items, categories, recipe links and checkmarks. archived:false restores it. Restore an archived list before editing its contents. Use archive instead of deletion when the user wants to put a completed list away.",
+      inputSchema: setShoppingListArchivedSchema.extend({ artifactId: z.uuid() }),
+      execute: async ({ artifactId, ...input }, { toolCallId }) => mutate("setShoppingListArchived", toolCallId, async (tx) => artifactData(await setShoppingListArchived(tx, actor, artifactId, input))),
+    }),
+    categorizeGroceryItems: tool({
+      description: "Assign or change optional shopping categories for multiple items in one atomic edit. Read getArtifact first for current IDs and revision; follow all pages to categorize the whole list. Use concise store sections such as Produce, Dairy & eggs, Meat & seafood, Pantry, Frozen, or Household, honoring the user’s labels. Set category to null to clear it. Item text, quantities, recipe links, checkoffs, and list order stay unchanged.",
+      inputSchema: categorizeGroceryItemsSchema.extend({ artifactId: z.uuid() }),
+      execute: async ({ artifactId, ...input }, { toolCallId }) => mutate("categorizeGroceryItems", toolCallId, async (tx) => artifactData(await categorizeGroceryItems(tx, actor, artifactId, input))),
+    }),
     updateGroceryItem: tool({
-      description: "Reword one grocery item, for example to change its quantity. Read the list first and pass the item's stable ID and the list revision.",
+      description: "Edit a shopping item’s text, quantity wording, or optional category. Supply text and/or category; null clears the category. Category-only edits preserve recipe links and quantities. Read the list first and pass its stable item ID and current revision.",
       inputSchema: updateGroceryItemSchema.extend({ artifactId: z.uuid() }),
       execute: async ({ artifactId, ...input }, { toolCallId }) => mutate("updateGroceryItem", toolCallId, async (tx) => artifactData(await updateGroceryItem(tx, actor, artifactId, input))),
     }),
@@ -445,10 +472,25 @@ export function createRecipeTools(db: Database, actor: Actor, run: Run) {
         return { recipeId, coverPhotoId: recipe.coverPhotoId, photos: (await listRecipePhotos(db, actor, recipeId)).map((photo) => ({ photoId: photo.id, width: photo.width, height: photo.height, createdAt: photo.createdAt.toISOString() })) };
       }),
     }),
+    generateRecipeCover: tool({
+      description: "Generate a cover candidate for a saved recipe, only when the user asks. Read the recipe first. Does not select the result: the user must approve it. Do not generate speculative covers or automatically retry failed requests.",
+      inputSchema: recipeIdSchema.extend({ expectedVersionId: z.uuid() }),
+      execute: async ({ recipeId, expectedVersionId }, { toolCallId }) => mutate("generateRecipeCover", toolCallId, async (tx) => ({ recipeId, ...await requestRecipeCover(tx, actor, recipeId, { expectedVersionId, idempotencyKey: toolCallId }) })),
+    }),
+    getRecipeCoverStatus: tool({
+      description: "Check cover candidates, generation progress and the current cover revision. Never describe a queued image as ready.",
+      inputSchema: recipeIdSchema,
+      execute: async ({ recipeId }) => safely(async () => { await authorize(); return getRecipeCoverState(db, actor, recipeId); }),
+    }),
+    removeRecipeCover: tool({
+      description: "Remove a recipe cover and keep it empty until explicitly selected again. Read the current cover revision first.",
+      inputSchema: recipeIdSchema.extend({ expectedCoverRevision: z.number().int().nonnegative() }),
+      execute: async ({ recipeId, expectedCoverRevision }, { toolCallId }) => mutate("removeRecipeCover", toolCallId, async (tx) => ({ recipeId, ...await setCoverPhoto(tx, actor, recipeId, null, expectedCoverRevision) })),
+    }),
     setRecipeCoverPhoto: tool({
-      description: "Make one of a recipe's uploaded photos its cover. Photos are uploaded on the recipe page; you can't upload one.",
-      inputSchema: recipeIdSchema.extend({ photoId: z.uuid() }),
-      execute: async ({ recipeId, photoId }, { toolCallId }) => mutate("setRecipeCoverPhoto", toolCallId, async (tx) => ({ recipeId, ...await setCoverPhoto(tx, actor, recipeId, photoId) })),
+      description: "Select an uploaded, cooking, or generated photo as the recipe cover only when the user chooses it. Read getRecipeCoverStatus first for the current revision.",
+      inputSchema: recipeIdSchema.extend({ photoId: z.uuid(), expectedCoverRevision: z.number().int().nonnegative() }),
+      execute: async ({ recipeId, photoId, expectedCoverRevision }, { toolCallId }) => mutate("setRecipeCoverPhoto", toolCallId, async (tx) => ({ recipeId, ...await setCoverPhoto(tx, actor, recipeId, photoId, expectedCoverRevision) })),
     }),
     addPhotoToRecipe: tool({
       description: "Put a photo the user attached in chat (by its photo id) onto a saved recipe's photos. It becomes the cover if the recipe has none, or when makeCover is true. Use for photos of the finished dish, not photos of recipe text.",

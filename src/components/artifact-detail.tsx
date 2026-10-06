@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, ListChecks, MessageCircle, Plus } from "lucide-react";
+import { ArrowLeft, ListChecks, MessageCircle, Plus, Merge } from "lucide-react";
 import type { ArtifactDetail as Artifact, MealEntryInput } from "@/domain/artifact";
 import type { RecipeSummary } from "@/domain/recipe";
 import { api } from "@/lib/client-http";
@@ -30,7 +30,7 @@ export function ArtifactDetail({ initial }: { initial: Artifact }) {
   const total = artifact.content.kind === "grocery" ? artifact.content.groups.reduce((count, group) => count + group.items.length, 0) : artifact.content.entries.length;
   const checked = artifact.content.kind === "grocery" ? artifact.content.groups.reduce((count, group) => count + group.items.filter((item) => item.checked).length, 0) : 0;
   return <main id="main" className="page-width max-w-4xl py-7 pb-28 sm:py-10 sm:pb-28"><Link href="/library" className="mb-7 inline-flex min-h-11 items-center gap-2 text-sm text-muted-foreground"><ArrowLeft size={16} />Back to Library</Link><div className="mb-8 flex flex-wrap items-start justify-between gap-5"><div className="min-w-0"><p className="mb-3 text-xs font-medium uppercase tracking-widest text-muted-foreground">{artifact.kind === "grocery" ? "Grocery list" : "Meal plan"}</p><h1 className="break-words text-3xl font-semibold tracking-tight sm:text-4xl">{artifact.title}</h1><p className="mt-3 text-sm text-muted-foreground">{artifact.kind === "grocery" ? `${checked} of ${total} items checked` : `${total} ${total === 1 ? "meal" : "meals"}`}</p></div>{openSift && <Button variant="outline" onClick={openSift}><MessageCircle />Ask Sift</Button>}</div>
-    <div className="mb-8 flex flex-wrap items-start justify-between gap-4"><ArtifactActions artifact={artifact} /><Button variant="outline" aria-expanded={adding} onClick={() => setAdding(!adding)} disabled={busy || deriving}><Plus />{artifact.kind === "grocery" ? "Add items" : "Add meal"}</Button></div>
+    <div className="mb-8 flex flex-wrap items-start justify-between gap-4"><ArtifactActions artifact={artifact} /><div className="flex flex-wrap gap-2">{artifact.content.kind === "grocery" && artifact.content.groups.length > 1 && <Button variant="outline" title="Merge matching ingredients across recipes into one list" onClick={() => mutate({ action: "combine" })} disabled={busy || deriving}><Merge />Combine duplicates</Button>}<Button variant="outline" aria-expanded={adding} onClick={() => setAdding(!adding)} disabled={busy || deriving}><Plus />{artifact.kind === "grocery" ? "Add items" : "Add meal"}</Button></div></div>
     {error && <p role="alert" className="mb-6 rounded-xl border p-4 text-sm text-destructive">{error}</p>}
     {adding && (artifact.kind === "grocery" ? <form className="mb-8 space-y-4 rounded-2xl border p-5" onSubmit={async (event) => {
       event.preventDefault(); const form = event.currentTarget, data = new FormData(form);

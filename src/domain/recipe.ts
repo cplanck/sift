@@ -1,3 +1,4 @@
+import { COOKING_ACTIONS } from "./step-illustrations";
 import { z } from "zod";
 import type { StockPhoto } from "./stock-photo";
 
@@ -20,7 +21,7 @@ export const recipeContentSchema = z.object({
   cookMinutes: z.number().int().nonnegative().max(10080).nullable().default(null),
   totalMinutes: z.number().int().nonnegative().max(20160).nullable().default(null),
   ingredientSections: z.array(z.object({ name: z.string().trim().max(150).default(""), items: z.array(ingredientSchema).min(1).max(200) })).min(1).max(30),
-  instructionSections: z.array(z.object({ name: z.string().trim().max(150).default(""), steps: z.array(z.string().trim().min(1).max(5000)).min(1).max(100) })).min(1).max(30),
+  instructionSections: z.array(z.object({ name: z.string().trim().max(150).default(""), steps: z.array(z.string().trim().min(1).max(5000)).min(1).max(100), illustrationKeys: z.array(z.enum(COOKING_ACTIONS).nullable()).max(100).optional() })).min(1).max(30),
   tags: z.array(z.string().trim().min(1).max(60)).max(30).default([]),
   collections: z.array(z.string().trim().min(1).max(60)).max(30).default([]),
 });
@@ -49,9 +50,12 @@ export interface RecipeSummary {
   totalMinutes: number | null;
   status: "draft" | "active" | "archived";
   favorite: boolean;
+  planned: boolean;
   updatedAt: string;
   coverPhotoId: string | null;
   stockPhoto?: StockPhoto | null;
+  coverSelection?: "auto" | "selected" | "none";
+  coverImage?: { origin: string; widths: number[] } | null;
 }
 
 export function normalizeSearch(value: string) { return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("en").trim(); }

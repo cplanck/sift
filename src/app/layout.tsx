@@ -4,7 +4,7 @@ import { appIconUrl } from "@/lib/app-icons";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: { default: "Sift — Your personal cookbook", template: "%s · Sift" },
+  title: { default: "Sift", template: "%s · Sift" },
   description: "Keep the recipes you love. Make them your own. Your personal cookbook, with a little help from Sift.",
   applicationName: "Sift",
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Sift" },

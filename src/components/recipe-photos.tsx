@@ -1,25 +1,107 @@
 "use client";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check } from "lucide-react";
+import { Camera, Check, ImagePlus, LoaderCircle, Minus, Sparkles, Trash2, Upload } from "lucide-react";
 import type { listRecipePhotos } from "@/services/photos";
+import type { getRecipeCoverState } from "@/services/cover-generation";
 import { api } from "@/lib/client-http";
 import { PhotoUpload } from "./photo-upload";
 import { RecipeThumbnail } from "./recipe-thumbnail";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Button } from "./ui/button";
+import { cn } from "@/lib/utils";
+import styles from "./recipe-empty-state.module.css";
 
 type Photos = Awaited<ReturnType<typeof listRecipePhotos>>;
-export function RecipePhotos({ recipeId, initialPhotos, coverPhotoId, title }: { recipeId: string; initialPhotos: Photos; coverPhotoId: string | null; title: string }) {
+type CoverState = Awaited<ReturnType<typeof getRecipeCoverState>>;
+export function RecipePhotos({ recipeId, initialPhotos = [], title, expectedVersionId, compact = false, generationBlocked = false }: { recipeId: string; initialPhotos?: Photos; coverPhotoId?: string | null; title: string; expectedVersionId: string; compact?: boolean; generationBlocked?: boolean }) {
   const router = useRouter();
-  const [photos, setPhotos] = useState(initialPhotos), [cover, setCover] = useState(coverPhotoId), [error, setError] = useState(""), [busy, setBusy] = useState(false);
-  return <section className="max-w-3xl space-y-6"><div><h2 className="text-xl font-medium">A recipe in pictures.</h2><p className="mt-2 text-sm text-muted-foreground">Photos stay private unless you include a cover in a share link.</p></div>
-    <PhotoUpload purpose="recipe" recipeId={recipeId} onUploaded={async (id) => { const items = await api<Photos>(`/api/recipes/${recipeId}/photos`); setPhotos(items); setCover((current) => current ?? id); router.refresh(); }} />
-    {photos.length > 0 && <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">{photos.map((photo, index) => <figure key={photo.id} className="space-y-2"><RecipeThumbnail photoId={photo.id} alt={`${title}, photo ${index + 1}`} className="aspect-square w-full" /><figcaption><Button variant={photo.id === cover ? "secondary" : "outline"} className="w-full" size="sm" disabled={busy || photo.id === cover} onClick={async () => {
-      const previous = cover; setCover(photo.id); setBusy(true); setError("");
-      try { await api(`/api/recipes/${recipeId}/photos`, { body: { photoId: photo.id } }); router.refresh(); }
-      catch (error) { setCover(previous); setError(error instanceof Error ? error.message : "Couldn’t change the cover photo."); }
-      finally { setBusy(false); }
-    }}>{photo.id === cover ? <><Check />Cover photo</> : "Use as cover"}</Button></figcaption></figure>)}</div>}
-    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+  const [photos, setPhotos] = useState(initialPhotos), [state, setState] = useState<CoverState | null>(null);
+  const [error, setError] = useState(""), [busy, setBusy] = useState(false), [uploading, setUploading] = useState(false), [choosing, setChoosing] = useState(false);
+  const requestKey = useRef<{ key: string; sourcePhotoId?: string } | null>(null);
+  const [deleting, setDeleting] = useState<Photos[number] | null>(null);
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    const [next, images] = await Promise.all([api<CoverState>(`/api/recipes/${recipeId}/cover`, { signal }), api<Photos>(`/api/recipes/${recipeId}/photos`, { signal })]);
+    setState(next); setPhotos(images);
+    return next;
+  }, [recipeId]);
+  useEffect(() => {
+    const controller = new AbortController(); let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const next = await refresh(controller.signal);
+        setError((message) => message === "Couldn’t refresh photos. Reconnecting…" ? "" : message);
+        if (!controller.signal.aborted) timer = setTimeout(poll, next.requests.some((item) => ["queued", "running"].includes(item.status)) ? 2500 : 15000);
+      } catch {
+        if (!controller.signal.aborted) { setError("Couldn’t refresh photos. Reconnecting…"); timer = setTimeout(poll, 5000); }
+      }
+    }
+    void poll();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [refresh]);
+  const active = state?.requests.find((item) => item.status === "queued" || item.status === "running");
+  const latest = state?.requests[0];
+  const candidate = latest?.status === "ready" ? photos.find((photo) => photo.id === latest.candidatePhotoId) : null;
+  const cover = photos.find((photo) => photo.id === state?.coverPhotoId);
+  async function run(action: () => Promise<unknown>) {
+    setBusy(true); setError("");
+    try { await action(); await refresh(); router.refresh(); }
+    catch (error) { setError(error instanceof Error ? error.message : "Couldn’t update the photo."); await refresh().catch(() => {}); }
+    finally { setBusy(false); }
+  }
+  async function select(photoId: string | null) {
+    if (!state) return;
+    await run(() => api(`/api/recipes/${recipeId}/photos`, { body: { photoId, expectedCoverRevision: state.coverRevision } }));
+  }
+  async function generate(sourcePhotoId?: string) {
+    await run(async () => {
+      if (!requestKey.current || requestKey.current.sourcePhotoId !== sourcePhotoId) requestKey.current = { key: crypto.randomUUID(), sourcePhotoId };
+      await api(`/api/recipes/${recipeId}/cover`, { body: { idempotencyKey: requestKey.current.key, expectedVersionId, sourcePhotoId } });
+      requestKey.current = null;
+    });
+  }
+  const empty = photos.length === 0;
+  return <section aria-label={compact ? "Recipe cover" : "Recipe photos"} className={compact ? "my-6 space-y-4 rounded-xl border p-4" : cn(styles.photos, !empty && styles.populatedPhotos, empty && !uploading && styles.emptyPhotos)}>
+    <header className={compact ? undefined : styles.heading}>
+      {!compact && empty && <span className={styles.icon}><Camera size={27} strokeWidth={1.3} /></span>}
+      <h2 className={compact ? "text-lg font-medium" : undefined}>{compact ? "Cover" : empty ? "No photos yet" : "Photos"}</h2>
+      {compact ? <p className="mt-1 text-sm text-muted-foreground">A photo of your dish, or an image made by Sift.</p> : empty && <p>Make this recipe yours with a photo of your dish.</p>}
+      {compact && cover?.origin === "generated" && <span className={styles.hint}>Generated by Sift</span>}
+    </header>
+    <div className={compact ? "flex flex-wrap items-center gap-2" : styles.actions}>
+      {!uploading && <Button size="sm" variant={compact ? "outline" : "default"} className={compact ? undefined : styles.primaryAction} disabled={busy} onClick={() => setUploading(true)} aria-expanded={false} aria-controls={`photo-upload-${recipeId}`}><Upload />Upload photo</Button>}
+      {uploading && <Button size="sm" variant="ghost" onClick={() => setUploading(false)}>Close uploader</Button>}
+      {compact && <>
+        <Button size="sm" variant="outline" disabled={busy || !state?.generationEnabled || !!active || generationBlocked} onClick={() => generate()}><ImagePlus />{candidate ? "Try another" : "Generate cover"}</Button>
+        {photos.length > 0 && <Button size="sm" variant="ghost" onClick={() => setChoosing(!choosing)} aria-expanded={choosing}>Choose photo<span className="text-muted-foreground">{photos.length}</span></Button>}
+        <Button size="sm" variant="ghost" disabled={busy || !state || state.coverSelection === "none"} onClick={() => select(null)}><Minus />No cover</Button>
+      </>}
+    </div>
+    {compact && state && !state.generationEnabled && <p className="text-xs text-muted-foreground">Generated covers are coming soon.</p>}
+    {compact && state?.generationEnabled && <p className="text-xs text-muted-foreground">{generationBlocked ? "Save your edits before generating a cover for the updated recipe." : "Uses the imported recipe. Save any edits before generating an updated cover."}</p>}
+    {uploading && <div id={`photo-upload-${recipeId}`} className={compact ? undefined : styles.upload}><PhotoUpload purpose="recipe" recipeId={recipeId} onUploaded={async () => { await refresh(); setChoosing(true); setUploading(false); router.refresh(); }} /></div>}
+    {active && <div className="flex items-center justify-between gap-3 rounded-xl border p-4"><div role="status" className="flex items-center gap-3"><LoaderCircle className="size-4 animate-spin" /><div><p className="text-sm">{active.sourcePhotoId ? "Enhancing your photo" : active.status === "queued" ? "Your cover is queued" : "Making your cover"}</p><p className="mt-1 text-xs text-muted-foreground">You can leave this tab. Your original stays in the gallery.</p></div></div><Button size="sm" variant="ghost" disabled={busy} onClick={() => run(() => api(`/api/recipes/${recipeId}/cover`, { method: "DELETE", body: { requestId: active.id } }))}>Cancel</Button></div>}
+    {latest?.status === "failed" && <p role="status" className="text-sm text-muted-foreground">{latest.errorMessage}{latest.retainedOutput && <Button className="ml-2" variant="outline" size="sm" disabled={busy || !!active} onClick={() => run(() => api(`/api/recipes/${recipeId}/cover`, { method: "PUT", body: { requestId: latest.id } }))}>Finish saved image</Button>}</p>}
+    {photos.length > 0 && (!compact || choosing || candidate) && <div className={styles.photoGrid}>{photos.map((photo, index) => <figure key={photo.id} className={styles.photoCard}>
+      <button type="button" className={styles.photoChoice} aria-label={photo.id === state?.coverPhotoId ? `Photo ${index + 1}, current cover` : `Use photo ${index + 1} as cover`} aria-pressed={photo.id === state?.coverPhotoId} disabled={busy || !state} onClick={() => { if (photo.id !== state?.coverPhotoId) void select(photo.id); }}>
+        <RecipeThumbnail photoId={photo.id} coverImage={{ origin: photo.origin, widths: photo.derivatives?.map((item) => item.width) ?? [] }} alt={`${title}, photo ${index + 1}`} className="aspect-[4/3] w-full" />
+        {photo.id === state?.coverPhotoId && <span className={styles.coverBadge}><Check size={13} />Cover</span>}
+        {photo.enhanced && <span className={styles.enhancedBadge}><Sparkles size={12} />Enhanced</span>}
+      </button>
+      <figcaption className={styles.photoActions}>
+        {photo.origin !== "generated" && <Button variant="ghost" size="sm" disabled={busy || !state?.generationEnabled || !!active || generationBlocked} title={!state?.generationEnabled ? "Photo enhancement is not configured yet" : "Create a polished product photo of your dish. Your original is kept."} onClick={() => generate(photo.id)}><Sparkles />{active?.sourcePhotoId === photo.id ? "Enhancing…" : "Enhance"}</Button>}
+        {photo.canDelete && <Button variant="ghost" size="icon" className={styles.deletePhoto} disabled={busy} aria-label={`Delete photo ${index + 1}`} onClick={() => { setError(""); setDeleting(photo); }}><Trash2 /></Button>}
+      </figcaption>
+    </figure>)}</div>}
+    <Dialog open={!!deleting} onOpenChange={(open) => { if (!open && !busy) setDeleting(null); }}>
+      <DialogContent className="sm:max-w-sm" showCloseButton={!busy}>
+        <DialogHeader><DialogTitle>Delete this photo?</DialogTitle><DialogDescription>{deleting?.id === state?.coverPhotoId ? "This will also remove it as the recipe cover. " : ""}{deleting?.purpose === "cooking" ? "It will be removed from this cook’s history too. " : ""}This can’t be undone.</DialogDescription></DialogHeader>
+        {deleting && <RecipeThumbnail photoId={deleting.id} alt="Photo to delete" className="mx-auto aspect-[4/3] w-48" />}
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        <DialogFooter><Button variant="ghost" disabled={busy} onClick={() => setDeleting(null)}>Keep photo</Button><Button variant="destructive" disabled={busy} onClick={() => run(async () => { if (!deleting) return; await api(`/api/photos/${deleting.id}`, { method: "DELETE" }); setDeleting(null); })}>{busy ? "Deleting…" : "Delete photo"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+    {compact && state?.coverSelection === "none" && <p className={compact ? "text-xs text-muted-foreground" : styles.hint}>No cover selected.</p>}
+    {error && !deleting && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </section>;
 }

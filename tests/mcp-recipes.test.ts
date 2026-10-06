@@ -75,7 +75,7 @@ describe("MCP recipe operations through the shared PostgreSQL domain", () => {
     expect(attempts.find((attempt) => attempt.status === "rejected")).toMatchObject({ reason: { code: "CONFLICT" } });
     const versions = await listVersions(db, actorA, saved.id);
     expect(versions).toHaveLength(2);
-    expect(versions[1].content).toEqual(content);
+    expect(versions[1].content).toEqual(saved.version.content);
     await expect(getMcpRecipe(db, actorA, { recipeId: saved.id, expectedVersionId: saved.version.id, view: "instructions" })).rejects.toMatchObject({ code: "CONFLICT" });
     await expect(updateMcpRecipe(db, actorA, { recipeId: saved.id, expectedVersionId: saved.version.id, content, changeSummary: "Retry stale write" })).rejects.toMatchObject({ code: "CONFLICT" });
     expect(await listVersions(db, actorA, saved.id)).toHaveLength(2);

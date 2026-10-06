@@ -6,7 +6,7 @@ import { createArtifact, listArtifacts } from "@/services/artifacts";
 export async function GET(request: Request) {
   try {
     const params = new URL(request.url).searchParams;
-    return json(await listArtifacts(database(), await requestActor(request), { ...(params.has("kind") ? { kind: params.get("kind") } : {}), ...(params.has("q") ? { query: params.get("q") } : {}) }));
+    return json(await listArtifacts(database(), await requestActor(request), { ...(params.has("includeArchived") ? { includeArchived: params.get("includeArchived") === "true" } : {}), ...(params.has("kind") ? { kind: params.get("kind") } : {}), ...(params.has("q") ? { query: params.get("q") } : {}) }));
   } catch (error) { return apiError(error); }
 }
 export async function POST(request: Request) {

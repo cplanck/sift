@@ -40,8 +40,9 @@ function duration(value: unknown) {
   return match ? Number(match[1] || 0) * 1440 + Number(match[2] || 0) * 60 + Number(match[3] || 0) + Math.ceil(Number(match[4] || 0) / 60) : null;
 }
 
-export function extractRecipeHtml(html: string): { content: RecipeContent | null; text: string } {
+export function extractRecipeHtml(html: string): { content: RecipeContent | null; text: string; imageUrl: string | null } {
   const $ = load(html);
+  let imageUrl: string | null = null;
   const nodes: unknown[] = [];
   $("script[type='application/ld+json']").each((_, el) => { try { nodes.push(JSON.parse($(el).text())); } catch { /* Ignore malformed metadata and fall back to visible content. */ } });
   const visit = (value: unknown): RecipeContent | null => {
@@ -74,10 +75,15 @@ export function extractRecipeHtml(html: string): { content: RecipeContent | null
       instructionSections: instructions,
       tags: typeof item.keywords === "string" ? item.keywords.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 30) : [],
     });
+    if (parsed.success) {
+      const image = Array.isArray(item.image) ? item.image[0] : item.image;
+      const candidate = typeof image === "string" ? image : record(image)?.url ?? record(image)?.contentUrl;
+      imageUrl = typeof candidate === "string" && candidate.length <= 2000 ? candidate : null;
+    }
     return parsed.success ? parsed.data : null;
   };
   const content = visit(nodes);
   $("script,style,nav,footer,header,iframe,noscript").remove();
   const text = ($("main").text() || $("article").text() || $("body").text()).replace(/[ \t]+/g, " ").replace(/\n\s*\n/g, "\n").trim().slice(0, 80000);
-  return { content, text };
+  return { content, text, imageUrl };
 }

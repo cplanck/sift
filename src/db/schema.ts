@@ -221,6 +221,8 @@ export const recipes = pgTable("recipes", {
   status: recipeStatus("status").default("draft").notNull(),
   source: jsonb("source").$type<RecipeSource>().notNull(),
   coverPhotoId: uuid("cover_photo_id"),
+  coverSelection: text("cover_selection", { enum: ["auto", "selected", "none"] }).default("auto").notNull(),
+  coverRevision: integer("cover_revision").default(0).notNull(),
   createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   updatedByUserId: uuid("updated_by_user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: createdAt(), updatedAt: updatedAt(),
@@ -269,6 +271,17 @@ export const recipeFavorites = pgTable("recipe_favorites", {
   index("recipe_favorites_workspace_user_idx").on(table.workspaceId, table.userId),
 ]);
 
+// A personal, short-lived shortlist of recipes to shop and cook for soon.
+export const recipePlans = pgTable("recipe_plans", {
+  workspaceId: uuid("workspace_id").notNull(), recipeId: uuid("recipe_id").notNull(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: createdAt(),
+}, (table) => [
+  primaryKey({ columns: [table.recipeId, table.userId] }),
+  foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "recipe_plans_workspace_recipe_fk" }).onDelete("cascade"),
+  index("recipe_plans_workspace_user_idx").on(table.workspaceId, table.userId),
+]);
+
 export const cookingSessions = pgTable("cooking_sessions", {
   id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull(), recipeId: uuid("recipe_id").notNull(),
   recipeVersionId: uuid("recipe_version_id").notNull(),
@@ -286,12 +299,28 @@ export const cookingSessions = pgTable("cooking_sessions", {
   index("cooking_sessions_workspace_recipe_idx").on(table.workspaceId, table.recipeId, table.startedAt),
 ]);
 
+export const cookingTimers = pgTable("cooking_timers", {
+  id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull(), sessionId: uuid("session_id").notNull(),
+  label: text("label").notNull(), stepKey: text("step_key"), durationSeconds: integer("duration_seconds").notNull(),
+  remainingMs: bigint("remaining_ms", { mode: "number" }).notNull(), dueAt: timestamp("due_at", { withTimezone: true }),
+  status: text("status", { enum: ["running", "paused", "dismissed"] }).default("running").notNull(),
+  revision: integer("revision").default(1).notNull(), createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [
+  foreignKey({ columns: [table.workspaceId, table.sessionId], foreignColumns: [cookingSessions.workspaceId, cookingSessions.id], name: "cooking_timers_workspace_session_fk" }).onDelete("cascade"),
+  index("cooking_timers_session_idx").on(table.workspaceId, table.sessionId),
+]);
+
 export const cookingSessionNotes = pgTable("cooking_session_notes", {
   id: uuid("id").defaultRandom().primaryKey(), workspaceId: uuid("workspace_id").notNull(), sessionId: uuid("session_id").notNull(),
   body: text("body").notNull(), createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }), createdAt: createdAt(),
+  organizedBody: text("organized_body"), wrapUp: boolean("wrap_up").notNull().default(false),
+  cleanupStatus: text("cleanup_status", { enum: ["none", "queued", "processing", "ready", "failed"] }).notNull().default("none"),
+  cleanupDispatchedAt: timestamp("cleanup_dispatched_at", { withTimezone: true }),
+  cleanupStartedAt: timestamp("cleanup_started_at", { withTimezone: true }),
 }, (table) => [
   foreignKey({ columns: [table.workspaceId, table.sessionId], foreignColumns: [cookingSessions.workspaceId, cookingSessions.id], name: "cooking_notes_workspace_session_fk" }).onDelete("cascade"),
   index("cooking_notes_workspace_session_idx").on(table.workspaceId, table.sessionId),
+  uniqueIndex("cooking_notes_wrap_up_idx").on(table.sessionId).where(sql`${table.wrapUp} = true`),
 ]);
 
 export const photos = pgTable("photos", {
@@ -304,6 +333,10 @@ export const photos = pgTable("photos", {
   objectKey: text("object_key").notNull().unique(),
   contentType: text("content_type").notNull(), byteSize: integer("byte_size").notNull(),
   width: integer("width"), height: integer("height"),
+  origin: text("origin", { enum: ["user", "imported", "generated"] }).default("user").notNull(),
+  originalObjectKey: text("original_object_key"),
+  derivatives: jsonb("derivatives").$type<{ objectKey: string; width: number; height: number }[]>(),
+  provenance: jsonb("provenance").$type<{ requestId: string; model: string; promptVersion: string; contentHash: string; checksum: string; sourcePhotoId?: string }>(),
   createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   createdAt: createdAt(),
 }, (table) => [
@@ -427,3 +460,47 @@ export const voiceTurns = pgTable("voice_turns", {
   responseText: text("response_text"), requiresApproval: boolean("requires_approval").notNull().default(false),
   createdAt: createdAt(), finishedAt: timestamp("finished_at", { withTimezone: true }),
 }, (table) => [uniqueIndex("voice_turns_fingerprint_idx").on(table.voiceSessionId, table.fingerprint), index("voice_turns_run_idx").on(table.runId)]);
+
+// Each request is also a durable outbox entry. Provider output is retained until
+// publication so storage retries never purchase a second generation.
+export const coverRequests = pgTable("cover_requests", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  recipeId: uuid("recipe_id").notNull(),
+  requestedByUserId: uuid("requested_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  idempotencyKey: text("idempotency_key").notNull(),
+  // Retain lineage if the source is deleted; deletion cancels unfinished edits.
+  sourcePhotoId: uuid("source_photo_id"),
+  snapshot: jsonb("snapshot").$type<RecipeContent>().notNull(),
+  contentHash: text("content_hash").notNull(),
+  expectedCoverRevision: integer("expected_cover_revision").notNull(),
+  model: text("model").notNull(),
+  promptVersion: text("prompt_version").notNull(),
+  status: text("status", { enum: ["queued", "running", "ready", "failed", "cancelled"] }).default("queued").notNull(),
+  reservedUsd: numeric("reserved_usd", { precision: 20, scale: 10 }).notNull(),
+  candidatePhotoId: uuid("candidate_photo_id").references(() => photos.id, { onDelete: "set null" }),
+  errorMessage: text("error_message"),
+  dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [
+  foreignKey({ columns: [table.workspaceId, table.recipeId], foreignColumns: [recipes.workspaceId, recipes.id], name: "cover_requests_workspace_recipe_fk" }).onDelete("cascade"),
+  uniqueIndex("cover_requests_idempotency_idx").on(table.workspaceId, table.idempotencyKey),
+  uniqueIndex("cover_requests_active_idx").on(table.recipeId).where(sql`${table.status} in ('queued', 'running')`),
+]);
+export const coverAttempts = pgTable("cover_attempts", {
+  requestId: uuid("request_id").primaryKey().references(() => coverRequests.id, { onDelete: "cascade" }),
+  outputBase64: text("output_base64"),
+  mediaType: text("media_type"),
+  costUsd: numeric("cost_usd", { precision: 20, scale: 10 }),
+  generationId: text("generation_id"),
+  latencyMs: integer("latency_ms"),
+  credentialSource: text("credential_source", { enum: ["user", "app"] }).notNull(),
+  createdAt: createdAt(),
+});
+
+// Retained independently of recipes so discarding a draft cannot reset spending.
+export const coverDailyBudgets = pgTable("cover_daily_budgets", {
+  workspaceId: uuid("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  day: text("day").notNull(),
+  committedUsd: numeric("committed_usd", { precision: 20, scale: 10 }).notNull(),
+}, (table) => [primaryKey({ columns: [table.workspaceId, table.day] })]);

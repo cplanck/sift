@@ -17,7 +17,7 @@ export function validateImportUrl(input: string) {
   return url;
 }
 
-export async function fetchRecipeUrl(input: string, redirects = 0, deadline = Date.now() + 12000): Promise<{ html: string; url: string }> {
+async function fetchPublicAsset(input: string, kind: "page" | "image", redirects = 0, deadline = Date.now() + 12000): Promise<{ bytes: Buffer; url: string }> {
   if (redirects > 3) throw new DomainError("INVALID_INPUT", "This URL redirects too many times. Paste the recipe instead.");
   const url = validateImportUrl(input);
   const host = url.hostname.replace(/^\[|\]$/g, "");
@@ -29,29 +29,35 @@ export async function fetchRecipeUrl(input: string, redirects = 0, deadline = Da
   if (!addresses.length || addresses.some((item) => !isPublicAddress(item.address))) throw new DomainError("INVALID_INPUT", "Private network URLs cannot be imported.");
   const address = addresses[0];
   // Pin the vetted address for the actual socket: re-resolving here would allow DNS rebinding.
-  const response = await new Promise<{ body: string; location?: string }>((resolve, reject) => {
+  const response = await new Promise<{ body: Buffer; location?: string }>((resolve, reject) => {
     const send = url.protocol === "https:" ? httpsRequest : httpRequest;
     const request = send(url, {
-      headers: { "User-Agent": "SiftRecipeImporter/1.0", Accept: "text/html,application/xhtml+xml", "Accept-Encoding": "identity" },
+      headers: { "User-Agent": "SiftRecipeImporter/1.0", Accept: kind === "image" ? "image/jpeg,image/png,image/webp" : "text/html,application/xhtml+xml", "Accept-Encoding": "identity" },
       family: address.family,
       lookup: (_hostname, options, callback) => {
         if (typeof options === "object" && options.all) callback(null, [address]);
         else callback(null, address.address, address.family);
       },
     }, (response) => {
-      if (response.statusCode && [301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) { response.destroy(); resolve({ body: "", location: response.headers.location }); return; }
-      if (response.statusCode !== 200 || !/text\/html|application\/xhtml\+xml/i.test(response.headers["content-type"] ?? "") || (response.headers["content-encoding"] && response.headers["content-encoding"] !== "identity")) {
+      if (response.statusCode && [301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) { response.destroy(); resolve({ body: Buffer.alloc(0), location: response.headers.location }); return; }
+      if (response.statusCode !== 200 || !(kind === "image" ? /^image\/(jpeg|png|webp)(?:;|$)/i : /text\/html|application\/xhtml\+xml/i).test(response.headers["content-type"] ?? "") || (response.headers["content-encoding"] && response.headers["content-encoding"] !== "identity")) {
         response.destroy(); reject(new DomainError("INVALID_INPUT", "This page could not be read. Paste its recipe text instead.")); return;
       }
       const chunks: Buffer[] = []; let size = 0;
-      response.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 2_000_000) { request.destroy(); reject(new DomainError("INVALID_INPUT", "This page is too large. Paste the recipe text instead.")); } else chunks.push(chunk); });
-      response.on("end", () => resolve({ body: Buffer.concat(chunks).toString("utf8") }));
+      response.on("data", (chunk: Buffer) => { size += chunk.length; if (size > (kind === "image" ? 8 * 1024 * 1024 : 2_000_000)) { request.destroy(); reject(new DomainError("INVALID_INPUT", "This page is too large. Paste the recipe text instead.")); } else chunks.push(chunk); });
+      response.on("end", () => resolve({ body: Buffer.concat(chunks) }));
       response.on("error", reject);
     });
     const timeout = setTimeout(() => request.destroy(new DomainError("INVALID_INPUT", "This website took too long to respond. Paste its recipe text instead.")), Math.max(1, deadline - Date.now()));
     request.on("close", () => clearTimeout(timeout));
     request.on("error", reject); request.end();
   });
-  if (response.location) return fetchRecipeUrl(new URL(response.location, url).href, redirects + 1, deadline);
-  return { html: response.body, url: url.href };
+  if (response.location) return fetchPublicAsset(new URL(response.location, url).href, kind, redirects + 1, deadline);
+  return { bytes: response.body, url: url.href };
 }
+
+export async function fetchRecipeUrl(input: string) {
+  const result = await fetchPublicAsset(input, "page");
+  return { html: result.bytes.toString("utf8"), url: result.url };
+}
+export async function fetchRecipeImage(input: string) { return fetchPublicAsset(input, "image"); }

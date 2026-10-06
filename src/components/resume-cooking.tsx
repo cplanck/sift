@@ -24,7 +24,7 @@ export function ResumeCooking() {
     }).catch(() => { if (!cancelled) setCook(null); });
     return () => { cancelled = true; };
   }, [pathname]);
-  if (!cook || pathname === `/recipes/${cook.recipeId}`) return null;
+  if (!cook || pathname === "/library" || pathname === `/recipes/${cook.recipeId}`) return null;
   const href = `/recipes/${cook.recipeId}?cook=${cook.sessionId}`;
   return <aside aria-label="Cooking in progress" className={styles.card}>
     <span aria-hidden="true" className={styles.icon}><ChefHat className="size-[18px]" /></span>

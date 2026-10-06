@@ -2,9 +2,10 @@ import { expect, test } from "./fixtures";
 
 test("brand shell is accessible and responsive", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /Good food/ })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Sift home" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sift", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.goto("/sign-in");
+  await expect(page.getByRole("link", { name: "Sift home" })).toBeVisible();
   await page.getByRole("button", { name: "Change color theme" }).click();
   await expect(page.locator("html")).toHaveClass(/dark/);
 });

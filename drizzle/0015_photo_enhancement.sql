@@ -1,0 +1,1 @@
+ALTER TABLE "cover_requests" ADD COLUMN "source_photo_id" uuid;

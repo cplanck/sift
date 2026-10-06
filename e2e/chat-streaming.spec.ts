@@ -35,7 +35,7 @@ async function controlledAssistant(page: Page) {
   };
 }
 
-test("one live activity line follows the reply, and finished lookups fold away", async ({ page }, info) => {
+test("one live activity line follows the reply, and finished actions fold below it", async ({ page }, info) => {
   const stream = await controlledAssistant(page);
   await signUp(page);
   await page.goto("/library");
@@ -61,7 +61,7 @@ test("one live activity line follows the reply, and finished lookups fold away",
     { type: "finish-step" }, { type: "start-step" });
   // Between steps exactly one activity line remains, and the finished lookup is already folded.
   await expect(log.getByRole("status")).toHaveText("Thinking…");
-  await expect(log.getByRole("button", { name: "Searched your cookbook", exact: true })).toBeVisible();
+  await expect(log.getByRole("button", { name: "Performed 1 action", exact: true })).toBeVisible();
 
   await stream.push({ type: "tool-input-available", toolCallId: "read", toolName: "getRecipe", input: { recipeId } });
   await expect(log.getByRole("status")).toHaveText("Reading the recipe…");
@@ -76,8 +76,9 @@ test("one live activity line follows the reply, and finished lookups fold away",
   await stream.close();
   await expect(panel.getByRole("button", { name: "Stop generating", exact: true })).toHaveCount(0);
   await expect(log.locator(".is-streaming")).toHaveCount(0);
-  const steps = log.getByRole("button", { name: "Checked your cookbook · 2 steps", exact: true });
+  const steps = log.getByRole("button", { name: "Performed 2 actions", exact: true });
   await expect(steps).toHaveAttribute("aria-expanded", "false");
+  expect((await steps.boundingBox())!.y).toBeGreaterThan((await log.locator(".assistant-markdown").boundingBox())!.y);
   await expect(log.getByRole("link", { name: "Leek and Potato Soup", exact: true })).toHaveCount(0);
   await steps.click();
   await expect(log.getByRole("link", { name: "Leek and Potato Soup", exact: true }).first()).toHaveAttribute("href", `/recipes/${recipeId}`);
@@ -146,7 +147,7 @@ test("photos attach, paste, upload and send with the message", async ({ page }, 
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   const panel = page.getByRole("dialog", { name: "sift", exact: true });
   const composer = panel.getByRole("textbox", { name: "Message Sift", exact: true });
-  await expect(panel.getByRole("button", { name: /^Assistant model:/ })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Conversation settings", exact: true })).toBeEnabled();
   await panel.locator('input[type="file"][accept="image/*"]').setInputFiles({ name: "card.png", mimeType: "image/png", buffer: png });
   await expect(panel.getByRole("list", { name: "Attached photos", exact: true }).getByRole("img")).toHaveCount(1);
   await composer.focus();

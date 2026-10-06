@@ -26,8 +26,8 @@ test("unconfigured voice is truthful and keeps the existing text conversation av
   await page.goto("/library");
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();
   await page.getByRole("textbox", { name: "Message Sift", exact: true }).fill("Keep this cooking question in the composer.");
-  // Typing is allowed while the conversation opens; its model control appears once it exists.
-  await expect(page.getByRole("button", { name: /^Assistant model:/ })).toBeVisible();
+  // Typing is allowed while the conversation opens; settings enable once it exists.
+  await expect(page.getByRole("button", { name: "Conversation settings", exact: true })).toBeEnabled();
   await expect(page.getByRole("textbox", { name: "Message Sift", exact: true })).toHaveValue("Keep this cooking question in the composer.");
   const conversations = await (await page.request.get("/api/conversations")).json() as { id: string }[];
   expect(conversations).toHaveLength(1);
@@ -63,7 +63,7 @@ test("cooking voice asks for permission only on tap, explains denial, and opens 
   let starts = 0;
   page.on("request", (request) => { if (request.url().endsWith("/api/voice/sessions") && request.method() === "POST") starts++; });
   await page.goto(`/recipes/${recipe.id}`);
-  await page.getByRole("button", { name: "Cook", exact: true }).click();
+  await page.getByRole("button", { name: "Start cooking", exact: true }).click();
   await expect(page.getByRole("region", { name: "Current cooking step", exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as MediaFixture).microphoneRequests)).toBe(0);
   await page.getByRole("button", { name: "Open Sift", exact: true }).click();

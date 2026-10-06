@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Database, Executor } from "@/db/connection";
-import { cookingSessionNotes, cookingSessions, photos, recipes, recipeVersions } from "@/db/schema";
+import { cookingSessionNotes, cookingSessions, cookingTimers, photos, recipes, recipeVersions } from "@/db/schema";
 import { cookingFinishSchema, cookingNoteSchema, cookingProgressSchema, cookingStartSchema, type CookingHistoryItem, type CookingProgress, type CookingSessionDetail } from "@/domain/cooking";
 import { DomainError } from "@/domain/errors";
 import type { RecipeContent } from "@/domain/recipe";
@@ -17,6 +17,9 @@ function summary(row: typeof cookingSessions.$inferSelect) {
   return { id: row.id, recipeId: row.recipeId, recipeVersionId: row.recipeVersionId, startedByUserId: row.startedByUserId,
     status: row.status, servings: row.servings, revision: row.revision, progress: row.progress, rating: row.rating, summary: row.summary,
     startedAt: row.startedAt.toISOString(), finishedAt: row.finishedAt?.toISOString() ?? null };
+}
+function noteSummary({ id, body, organizedBody, cleanupStatus, createdByUserId, createdAt }: typeof cookingSessionNotes.$inferSelect) {
+  return { id, body, organizedBody, cleanupStatus, createdByUserId, createdAt: createdAt.toISOString() };
 }
 export async function assertCookingSessionOwner(db: Executor, actor: Actor, id: string) {
   await assertMembership(db, actor);
@@ -50,7 +53,7 @@ export async function getCookingSession(db: Database, actor: Actor, id: string):
       .where(and(eq(photos.workspaceId, actor.workspaceId), eq(photos.sessionId, id), eq(photos.purpose, "cooking"), eq(photos.status, "ready"))).orderBy(desc(photos.createdAt)),
   ]);
   return { ...summary(row.session), version: { id: row.version.id, number: row.version.number, content: row.version.content },
-    notes: notes.map(({ id, body, createdByUserId, createdAt }) => ({ id, body, createdByUserId, createdAt: createdAt.toISOString() })),
+    notes: notes.map(noteSummary),
     photos: images.map((photo) => ({ ...photo, createdAt: photo.createdAt.toISOString() })),
   };
 }
@@ -87,12 +90,10 @@ export async function getActiveCookingSession(db: Database, actor: Actor, recipe
 export async function getRecipeLearnings(db: Database, actor: Actor, recipeId: string) {
   const [notes, history] = await Promise.all([listRecipeNotes(db, actor, recipeId), listCookingHistory(db, actor, recipeId)]);
   const finished = history.filter((cook) => cook.status !== "active"), cooks = finished.slice(0, 5);
-  const cookNotes = cooks.length ? await db.select({ sessionId: cookingSessionNotes.sessionId, body: cookingSessionNotes.body }).from(cookingSessionNotes)
-    .where(and(eq(cookingSessionNotes.workspaceId, actor.workspaceId), inArray(cookingSessionNotes.sessionId, cooks.map((cook) => cook.id)))).orderBy(desc(cookingSessionNotes.createdAt)) : [];
   return {
     notes: notes.slice(0, 10).map((note) => ({ body: note.body.slice(0, 1000), createdAt: note.createdAt.toISOString() })), totalNotes: notes.length,
     pastCooks: cooks.map((cook) => ({ sessionId: cook.id, status: cook.status, finishedAt: cook.finishedAt, versionNumber: cook.versionNumber, servings: cook.servings, rating: cook.rating, summary: cook.summary,
-      notes: cookNotes.filter((note) => note.sessionId === cook.id).slice(0, 5).map((note) => note.body.slice(0, 600)) })),
+      notes: cook.notes.slice(0, 5).map((note) => (note.organizedBody ?? note.body).slice(0, 600)) })),
     totalPastCooks: finished.length,
   };
 }
@@ -104,7 +105,7 @@ export async function listActiveCookingSessions(db: Database, actor: Actor) {
     .innerJoin(recipeVersions, and(eq(recipeVersions.id, cookingSessions.recipeVersionId), eq(recipeVersions.workspaceId, actor.workspaceId)))
     .where(and(eq(cookingSessions.workspaceId, actor.workspaceId), eq(cookingSessions.startedByUserId, actor.userId), eq(cookingSessions.status, "active"))).orderBy(desc(cookingSessions.startedAt));
   return rows.map((row) => ({ sessionId: row.id, recipeId: row.recipeId, title: row.content.title, servings: row.servings, startedAt: row.startedAt.toISOString(),
-    currentStep: row.progress.currentStep, totalSteps: row.content.instructionSections.reduce((total, section) => total + section.steps.length, 0) }));
+    currentStep: row.progress.currentStep, currentStepText: row.content.instructionSections.flatMap((section) => section.steps)[row.progress.currentStep] ?? "", completedSteps: new Set(row.progress.checkedSteps).size, totalSteps: row.content.instructionSections.reduce((total, section) => total + section.steps.length, 0) }));
 }
 
 export async function listCookingHistory(db: Database, actor: Actor, recipeId: string): Promise<CookingHistoryItem[]> {
@@ -112,7 +113,10 @@ export async function listCookingHistory(db: Database, actor: Actor, recipeId: s
   const rows = await db.select({ session: cookingSessions, version: recipeVersions }).from(cookingSessions)
     .innerJoin(recipeVersions, and(eq(recipeVersions.id, cookingSessions.recipeVersionId), eq(recipeVersions.recipeId, recipeId), eq(recipeVersions.workspaceId, actor.workspaceId)))
     .where(and(eq(cookingSessions.workspaceId, actor.workspaceId), eq(cookingSessions.recipeId, recipeId))).orderBy(desc(cookingSessions.startedAt));
-  return rows.map(({ session, version }) => ({ ...summary(session), versionNumber: version.number, title: version.content.title }));
+  const notes = rows.length ? await db.select().from(cookingSessionNotes)
+    .where(and(eq(cookingSessionNotes.workspaceId, actor.workspaceId), inArray(cookingSessionNotes.sessionId, rows.map(({ session }) => session.id)))).orderBy(desc(cookingSessionNotes.createdAt)) : [];
+  return rows.map(({ session, version }) => ({ ...summary(session), versionNumber: version.number, title: version.content.title,
+    notes: notes.filter((note) => note.sessionId === session.id).map(noteSummary) }));
 }
 
 export async function updateCookingProgress(db: Database, actor: Actor, id: string, input: unknown) {
@@ -135,9 +139,14 @@ export async function finishCookingSession(db: Database, actor: Actor, id: strin
     const [session] = await tx.select().from(cookingSessions).where(scope(actor, id)).for("update");
     if (!session || session.startedByUserId !== actor.userId) throw new DomainError("NOT_FOUND", "Cooking session not found.");
     // Retrying a completed request is safe; a conflicting wrap-up never overwrites it.
-    if (session.status === data.status && session.revision === data.expectedRevision + 1 && session.rating === (data.rating ?? null) && session.summary === (data.summary || null)) return getCookingSession(tx, actor, id);
+    if (session.status === data.status && session.revision === data.expectedRevision + 1 && session.rating === (data.rating ?? null) && session.summary === (data.summary || null)) {
+      const [note] = await tx.select().from(cookingSessionNotes).where(and(eq(cookingSessionNotes.sessionId, id), eq(cookingSessionNotes.wrapUp, true)));
+      if ((note?.body ?? "") === (data.notes ?? "")) return getCookingSession(tx, actor, id);
+    }
     assertEditable(session, actor, data.expectedRevision);
+    await tx.update(cookingTimers).set({ status: "dismissed", dueAt: null, remainingMs: 0, updatedAt: new Date() }).where(and(eq(cookingTimers.workspaceId, actor.workspaceId), eq(cookingTimers.sessionId, id)));
     await tx.update(cookingSessions).set({ status: data.status, finishedAt: new Date(), rating: data.rating ?? null, summary: data.summary || null, revision: session.revision + 1 }).where(scope(actor, id));
+    if (data.notes) await tx.insert(cookingSessionNotes).values({ workspaceId: actor.workspaceId, sessionId: id, createdByUserId: actor.userId, body: data.notes, wrapUp: true, cleanupStatus: "queued" });
     return getCookingSession(tx, actor, id);
   });
 }
@@ -167,7 +176,7 @@ export async function addCookingSessionNote(db: Database, actor: Actor, id: stri
   return db.transaction(async (tx) => {
     await assertCookingSessionOwner(tx, actor, id);
     const [note] = await tx.insert(cookingSessionNotes).values({ workspaceId: actor.workspaceId, sessionId: id, body: data.body, createdByUserId: actor.userId }).returning();
-    return { id: note.id, body: note.body, createdByUserId: note.createdByUserId, createdAt: note.createdAt.toISOString() };
+    return noteSummary(note);
   });
 }
 

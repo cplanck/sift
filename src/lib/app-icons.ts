@@ -2,7 +2,7 @@ import "server-only";
 
 // Change this revision whenever the generated artwork changes, including Apple
 // touch icons and installed-app icons which browsers cache independently.
-const iconRevision = "sift-bowl-2";
+const iconRevision = "sift-smile-1";
 
 export function appIconUrl(filename: string) {
   return `${appIconDirectory()}/${filename}?v=${iconRevision}`;

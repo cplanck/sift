@@ -1,0 +1,143 @@
+.screen { height: 100dvh; overflow: hidden; display: flex; flex-direction: column; padding-top: env(safe-area-inset-top); }
+.screen > header { flex-shrink: 0; min-height: 72px; height: 72px; padding-block: 10px; }
+.page { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; padding-top: 8px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+.page > [role="alert"] { flex-shrink: 0; max-height: 80px; overflow-y: auto; }
+.hero { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); height: clamp(220px, 34dvh, 340px); flex-shrink: 0; min-height: 0; align-items: center; gap: clamp(24px, 3vw, 48px); }
+.photo { position: relative; align-self: stretch; min-width: 0; min-height: 0; }
+.thumbnail { width: 100%; height: 100%; min-height: 0; border-radius: 18px; }
+.back, .changePhoto { position: absolute; display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 38px; border-radius: 999px; color: #fff; background: #0b1010cc; backdrop-filter: blur(12px); border: 1px solid #ffffff24; }
+.back { top: 14px; left: 14px; width: 38px; }
+.changePhoto { bottom: 14px; left: 14px; padding: 8px 14px; font-size: 12px; }
+.back:hover, .changePhoto:hover { background: #0b1010; }
+.heroCopy { min-width: 0; min-height: 0; max-height: 100%; overflow-y: auto; overscroll-behavior: contain; padding: 4px 6px 4px 0; }
+.heroCopy h1 { font-family: Georgia, 'Times New Roman', serif; font-size: clamp(28px, 2.8vw, 44px); font-weight: 400; line-height: 1.12; letter-spacing: -.025em; text-wrap: balance; overflow-wrap: anywhere; }
+.summary { margin-top: 12px; color: var(--muted-foreground); font-size: clamp(13px, 1.1vw, 16px); line-height: 1.65; text-wrap: pretty; }
+.readMore { display: inline; margin-left: 7px; font-size: 11px; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+.actions { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.cookAction { flex: 1 1 180px; max-width: 250px; }
+.actions .startCooking { background: var(--selection); color: var(--selection-foreground); height: 48px; font-weight: 600; font-size: 14px; }
+.startCooking:hover { filter: brightness(.95); }
+.actions .planAction { background: transparent; padding-inline: 20px; }
+.actions .iconAction { width: 48px; height: 48px; border: 1px solid var(--border); border-radius: 50%; }
+.iconAction svg { width: 18px; height: 18px; }
+.cookHistory { margin-top: 13px; font-size: 11px; color: var(--muted-foreground); }
+.page .sections { margin-top: 14px; gap: 0; flex: 1; min-height: 0; overflow: hidden; }
+.sections .tabs { flex-shrink: 0; width: 100%; height: auto; justify-content: flex-start; gap: 25px; padding: 0; border-radius: 0; border-bottom: 1px solid var(--border); background: transparent; overflow-x: auto; }
+.tabs .tab { position: relative; flex: 0 0 auto; min-height: 48px; padding: 12px 6px; border: 0; border-radius: 0; background: transparent; font-size: 13px; font-weight: 400; box-shadow: none; }
+.tabs .tab[data-state='active'] { color: var(--foreground); background: transparent; box-shadow: none; font-weight: 550; }
+.tab[data-state='active']::after { content: ''; position: absolute; bottom: 0; height: 3px; left: 0; right: 0; border-radius: 4px; background: var(--selection); opacity: 1; }
+.sections > [role='tabpanel'] { padding-top: 16px; padding-bottom: 80px; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.sections > .recipePanel { overflow: hidden; padding-bottom: 0; }
+.overview { height: 100%; min-height: 0; overflow: hidden; display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.6fr); gap: clamp(30px, 4vw, 64px); }
+.ingredients, .overviewInstructions { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 12px 24px 7px; }
+.overviewInstructions { border-left: 1px solid var(--border); padding-left: 22px; padding-bottom: 80px; }
+.panelHeading, .ingredientTools h2 { font-size: 14px; font-weight: 550; color: var(--foreground); }
+.panelHeading { padding: 7px 0 19px; position: sticky; top: 0; z-index: 2; background: var(--background); }
+.ingredientTools { position: sticky; top: 0; z-index: 2; background: var(--background); padding-bottom: 10px; display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-bottom: 12px; }
+.ingredientTools h2 { margin-right: auto; }
+.ingredientTools > span { font-size: 11px; border: 1px solid var(--border); border-radius: 999px; padding: 8px 14px; }
+.ingredientTools button { border-radius: 999px; background: transparent; font-size: 11px; }
+.scaling { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; border-radius: 14px; background: var(--muted); padding: 10px 12px; margin-bottom: 16px; font-size: 12px; }
+.servingInput { display: flex; align-items: center; }
+.servingInput button { width: 36px; height: 36px; border-radius: 999px; }
+.servingInput input { width: 64px; height: 36px; background: transparent; text-align: center; border: 0; box-shadow: none; }
+.scaledNotice { display: flex; gap: 8px; align-items: center; padding-bottom: 15px; font-size: 11px; color: var(--muted-foreground); line-height: 1.6; }
+.ingredientGroup + .ingredientGroup { margin-top: 20px; }
+.ingredientGroup h3, .instructionGroup { margin-bottom: 10px; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted-foreground); }
+.ingredientGroup label { display: grid; grid-template-columns: 18px minmax(60px, .45fr) minmax(0, 1.55fr); gap: 14px; align-items: start; min-height: 38px; padding: 8px 7px; margin-inline: -7px; border-radius: 8px; cursor: pointer; font-size: 12px; line-height: 1.6; }
+.ingredientGroup label:hover { background: var(--muted); }
+.ingredientGroup input { appearance: none; width: 17px; height: 17px; margin-top: 2px; border: 1px solid var(--muted-foreground); border-radius: 4px; display: grid; place-content: center; }
+.ingredientGroup input:checked { background: var(--selection); border-color: var(--selection); }
+.ingredientGroup input:checked::after { content: ''; width: 9px; height: 5px; border-left: 2px solid var(--selection-foreground); border-bottom: 2px solid var(--selection-foreground); transform: translateY(-1px) rotate(-45deg); }
+.ingredientGroup input:checked ~ span { color: var(--muted-foreground); text-decoration: line-through; }
+.ingredientGroup span { overflow-wrap: anywhere; }
+.amount { font-variant-numeric: tabular-nums; }
+.wholeIngredient { grid-column: 2 / -1; }
+.ingredients .shopping { margin-top: 24px; min-height: 44px; border-radius: 999px; background: transparent; padding-inline: 20px; font-size: 12px; }
+.instructions { min-width: 0; }
+.instructions > div + div { margin-top: 22px; }
+.step { position: relative; display: flex; align-items: flex-start; gap: 22px; padding: 16px; border-radius: 15px; min-height: 80px; }
+.step:not(:last-child)::before { content: ''; position: absolute; left: 32px; top: 46px; bottom: -20px; width: 1px; background: var(--border); }
+.firstStep { background: var(--muted); }
+.stepNumber { display: grid; place-items: center; position: relative; flex-shrink: 0; width: 33px; height: 33px; border-radius: 50%; border: 1px solid var(--border); background: var(--background); font-size: 13px; }
+.firstStep .stepNumber { background: var(--selection); color: var(--selection-foreground); border-color: transparent; }
+.stepCopy { min-width: 0; flex: 1; }
+.stepCopy h4 { font-size: 14px; line-height: 1.55; font-weight: 550; padding-top: 3px; }
+.stepCopy p { color: var(--muted-foreground); font-size: 13px; line-height: 1.7; margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.stepDuration { flex-shrink: 0; font-size: 11px; color: var(--muted-foreground); padding-top: 6px; }
+.page :is(a, button, input):focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+
+@media (max-width: 1199px) {
+  .hero { gap: 26px; grid-template-columns: minmax(0, .75fr) minmax(0, 1.25fr); }
+  .heroCopy h1 { font-size: 30px; }
+  .summary { font-size: 13px; line-height: 1.55; }
+  .actions { margin-top: 15px; gap: 8px; }
+  .actions .startCooking, .actions .planAction { height: 44px; font-size: 12px; padding-inline: 16px; }
+  .actions .iconAction { height: 44px; width: 44px; }
+  .cookAction { flex-basis: 160px; }
+  .overview { grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 20px; }
+  .overviewInstructions { padding-left: 16px; }
+  .step { gap: 14px; padding-inline: 10px; }
+  .step:not(:last-child)::before { left: 26px; }
+  .stepDuration { display: none; }
+}
+@media (max-width: 900px) and (min-width: 640px) {
+  .hero { height: 300px; grid-template-columns: minmax(0, .65fr) minmax(0, 1.35fr); gap: 22px; }
+  .heroCopy h1 { font-size: 29px; }
+  .actions .planAction { padding-inline: 14px; }
+  .actions .iconAction { width: 40px; height: 44px; }
+  .cookAction { flex-basis: 150px; }
+  .overview { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 12px; }
+  .ingredientGroup label { gap: 10px; grid-template-columns: 18px minmax(48px, .45fr) minmax(0, 1.55fr); }
+}
+@media (max-height: 700px) and (min-width: 640px) {
+  .hero { height: 215px; }
+  .heroCopy h1 { font-size: 27px; }
+  .summary { margin-top: 8px; }
+}
+@media (max-width: 639px) {
+  .screen > header { height: 64px; min-height: 64px; padding-block: 8px; }
+  .hero { height: auto; max-height: 35dvh; overflow-y: auto; grid-template-columns: 92px minmax(0, 1fr); gap: 12px; align-items: start; }
+  .photo { height: 120px; grid-row: 1; }
+  .thumbnail { border-radius: 12px; }
+  .back { top: 6px; left: 6px; width: 30px; min-height: 30px; }
+  .changePhoto { bottom: 6px; left: 6px; min-height: 30px; padding: 5px 8px; font-size: 0; gap: 0; }
+  .heroCopy { display: contents; }
+  .heroCopy h1 { grid-column: 2; font-size: 25px; text-wrap: pretty; }
+  .summary, .cookHistory { display: none; }
+  .actions { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, 36px); grid-column: 1 / -1; margin-top: 0; gap: 6px; }
+  .cookAction { flex: 1 1 140px; max-width: none; }
+  .cookAction p { display: none; }
+  .actions .startCooking, .actions .planAction { padding-inline: 12px; }
+  .actions .iconAction { width: 36px; }
+  .actions .planAction { width: 36px; padding: 0; font-size: 0; gap: 0; }
+  .sections .tabs { gap: 20px; }
+  .tabs .tab { min-height: 44px; font-size: 12px; }
+  .sections > .recipePanel { overflow-y: auto; }
+  .overview { display: block; height: auto; overflow: visible; }
+  .ingredients, .overviewInstructions { overflow: visible; padding-inline: 4px; }
+  .overviewInstructions { border-left: 0; border-top: 1px solid var(--border); padding-top: 20px; margin-top: 20px; }
+  .ingredientTools, .panelHeading { position: static; }
+  .ingredientGroup label { min-height: 44px; font-size: 13px; }
+}
+@media (prefers-reduced-motion: reduce) { .page * { scroll-behavior: auto !important; } }
+
+.overviewSummary { min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 8px 80px; }
+.overviewDisclosure { border-top: 1px solid var(--border); }
+.overviewDisclosure > summary { display: flex; align-items: center; gap: 10px; min-height: 52px; cursor: pointer; font-size: 12px; color: var(--muted-foreground); list-style: none; }
+.overviewDisclosure > summary::-webkit-details-marker { display: none; }
+.overviewDisclosure > summary::after { content: '+'; margin-left: auto; font-size: 18px; color: var(--muted-foreground); }
+.overviewDisclosure[open] > summary::after { content: '−'; }
+.overviewDisclosure > summary > span { font-size: 10px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted-foreground); }
+.overviewDisclosure > :not(summary) { margin-block: 10px 24px; }
+.overviewDisclosure > summary:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.pastCooks { margin-bottom: 24px; }
+@media (max-width: 639px) { .overviewSummary { overflow: visible; padding-inline: 4px; } .overview:has(.overviewSummary) { display: flex; flex-direction: column; gap: 24px; } .overviewSummary { padding-bottom: 24px; } .overview:has(.overviewSummary) > .ingredients { padding-bottom: 0; } }
+.sections > .centeredTab { padding-top: 0; padding-bottom: 0; }
+
+@media (max-width: 639px) {
+  .actions > div:nth-child(2) { grid-row: 2; grid-column: 1 / -1; width: 100%; max-width: none; }
+  .actions > div:nth-child(2) > div > button:first-child { flex: 1; justify-content: center; }
+}
+
+@media (max-width: 639px) { .screen { height: calc(100dvh - var(--mobile-nav-clearance) - env(safe-area-inset-top)); padding-top: 0; } }

@@ -92,3 +92,5 @@
   .orb, .mark, .key { transition: none; }
   .orb:hover, .orb:hover .mark { transform: none; }
 }
+
+@media (max-width: 639px) { .launcher { display: none; } }

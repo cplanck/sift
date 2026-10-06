@@ -162,8 +162,12 @@ describe("Cooking services with PostgreSQL", () => {
     expect(photo).toMatchObject({ purpose: "cooking", sessionId: session.id, status: "ready" });
     expect((await getCookingSession(db, actorA, session.id)).photos.map((image) => image.id)).toEqual([photo.id]);
     expect((await getRecipe(db, actorA, recipe.id)).coverPhotoId).toBeNull();
-    expect(await listRecipePhotos(db, actorA, recipe.id)).toEqual([]);
-    await expect(setCoverPhoto(db, actorA, recipe.id, photo.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await listRecipePhotos(db, actorA, recipe.id)).map((image) => image.id)).toEqual([photo.id]);
+    await setCoverPhoto(db, actorA, recipe.id, photo.id);
+    const coverId = (await getRecipe(db, actorA, recipe.id)).coverPhotoId!;
+    expect(coverId).not.toBe(photo.id);
+    expect(await getPhoto(db, actorA, coverId)).toMatchObject({ purpose: "recipe", sessionId: null });
+    expect(await getPhoto(db, actorA, photo.id)).toMatchObject({ purpose: "cooking", sessionId: session.id });
     expect(await listVersions(db, actorA, recipe.id)).toHaveLength(1);
   });
 
