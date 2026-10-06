@@ -121,9 +121,9 @@ test("cooking boundaries reject cross-user and stale writes; ending early keeps 
   } finally { await outsider.close(); }
   await page.goto(`/recipes/${recipe.id}?cook=${session.id}`);
   await page.getByRole("button", { name: "End cook early", exact: true }).click();
-  const end = page.getByRole("dialog", { name: "End this cook early?", exact: true });
+  const end = page.getByRole("dialog", { name: "End this cook?", exact: true });
   await end.getByRole("textbox", { name: "Summary (optional)", exact: true }).fill("Ran out of carrots.");
-  await end.getByRole("button", { name: "End this cook", exact: true }).click();
+  await end.getByRole("button", { name: "Save and end", exact: true }).click();
   await expect(page.getByText("Saved for your cooking history.", { exact: true })).toBeVisible();
   expect(await (await page.request.get(`/api/cooking-sessions/${session.id}`)).json()).toMatchObject({ status: "abandoned", summary: "Ran out of carrots.", progress });
   await page.getByRole("tab", { name: "Cook notes", exact: true }).click();

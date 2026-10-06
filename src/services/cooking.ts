@@ -5,6 +5,7 @@ import { cookingSessionNotes, cookingSessions, photos, recipes, recipeVersions }
 import { cookingFinishSchema, cookingNoteSchema, cookingProgressSchema, cookingStartSchema, type CookingHistoryItem, type CookingProgress, type CookingSessionDetail } from "@/domain/cooking";
 import { DomainError } from "@/domain/errors";
 import type { RecipeContent } from "@/domain/recipe";
+import { deletePhotoObject } from "@/lib/r2";
 import { getRecipe, listRecipeNotes } from "./recipes";
 import { assertMembership, type Actor } from "./workspaces";
 
@@ -139,6 +140,26 @@ export async function finishCookingSession(db: Database, actor: Actor, id: strin
     await tx.update(cookingSessions).set({ status: data.status, finishedAt: new Date(), rating: data.rating ?? null, summary: data.summary || null, revision: session.revision + 1 }).where(scope(actor, id));
     return getCookingSession(tx, actor, id);
   });
+}
+
+/**
+ * Throws away an in-progress cook as if it never happened: the session, its
+ * notes and its photos. The recipe and its versions are untouched. Use
+ * finishCookingSession with "abandoned" to end a cook but keep its history.
+ */
+export async function discardCookingSession(db: Database, actor: Actor, id: string, input: unknown) {
+  const { expectedRevision } = z.object({ expectedRevision: z.number().int().positive() }).strict().parse(input);
+  const removed = await db.transaction(async (tx) => {
+    await assertMembership(tx, actor);
+    const [session] = await tx.select().from(cookingSessions).where(scope(actor, id)).for("update");
+    assertEditable(session, actor, expectedRevision);
+    const objects = await tx.select({ key: photos.objectKey }).from(photos).where(and(eq(photos.workspaceId, actor.workspaceId), eq(photos.sessionId, id)));
+    // Notes and photo rows cascade with the session.
+    await tx.delete(cookingSessions).where(scope(actor, id));
+    return { recipeId: session!.recipeId, keys: objects.map((object) => object.key) };
+  });
+  await Promise.all(removed.keys.map((key) => deletePhotoObject(key).catch(() => undefined)));
+  return { id, recipeId: removed.recipeId, discarded: true as const };
 }
 
 export async function addCookingSessionNote(db: Database, actor: Actor, id: string, input: unknown) {

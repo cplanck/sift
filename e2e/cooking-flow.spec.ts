@@ -51,3 +51,19 @@ test("leaving a cook shows a resume card everywhere else until it's hidden", asy
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await expect(card).toHaveCount(0);
 });
+
+test("a cook can be discarded without leaving anything in history", async ({ page }) => {
+  const { recipe, session } = await startCook(page);
+  await page.goto(`/recipes/${recipe.id}?cook=${session.id}`);
+  await page.getByRole("button", { name: "End cook early", exact: true }).click();
+  const end = page.getByRole("dialog", { name: "End this cook?", exact: true });
+  await expect(end).toContainText("discard it as if you never started");
+  await page.screenshot({ path: `test-results/discard-cook-${test.info().project.name}.png`, animations: "disabled" });
+  await end.getByRole("button", { name: "Discard cook", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/recipes/${recipe.id}$`));
+  expect((await page.request.get(`/api/cooking-sessions/${session.id}`)).status()).toBe(404);
+  expect(await (await page.request.get(`/api/recipes/${recipe.id}/cooks`)).json()).toEqual([]);
+  await page.goto("/library");
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Cooking in progress" })).toHaveCount(0);
+});

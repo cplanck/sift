@@ -8,7 +8,7 @@ import { beginConversationTurn, createConversation, getConversation } from "@/se
 import { attachChatPhoto } from "@/services/photos";
 import { isAppPath, mergeLabels } from "@/ai/recipe-tools";
 import { clearCheckedGroceryItems, createArtifact, deleteArtifact, getArtifact, listArtifacts, renameArtifact, setGroceryItemChecked, updateGroceryItem, updateMealPlanEntry } from "@/services/artifacts";
-import { addCookingSessionNote, finishCookingSession, getCookingSession, getRecipeLearnings, listActiveCookingSessions, startCookingSession } from "@/services/cooking";
+import { addCookingSessionNote, discardCookingSession, finishCookingSession, getCookingSession, getRecipeLearnings, listActiveCookingSessions, startCookingSession } from "@/services/cooking";
 import { addRecipeNote, createRecipe, getRecipe } from "@/services/recipes";
 import { ensurePersonalWorkspace, type Actor } from "@/services/workspaces";
 import { testDatabaseUrl } from "./database";
@@ -135,5 +135,23 @@ describe("learning from past cooks", () => {
     expect(learnings).toMatchObject({ totalNotes: 1, totalPastCooks: 1, notes: [{ body: "Needs more salt than written." }] });
     expect(learnings.pastCooks).toEqual([expect.objectContaining({ sessionId: first.id, status: "completed", rating: 3, summary: "Good, but watch the heat.", notes: ["Burned the leeks on high heat."] })]);
     await expect(getRecipeLearnings(db, actorB, recipe.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("discarding a cook", () => {
+  it("removes an active cook and its notes, and refuses finished or other people's cooks", async () => {
+    const recipe = await createRecipe(db, actorA, { content: { ...content, title: "Discard soup" }, source: { type: "manual" }, status: "active" });
+    const cook = await startCookingSession(db, actorA, { recipeId: recipe.id, expectedVersionId: recipe.version.id });
+    await addCookingSessionNote(db, actorA, cook.id, { body: "Trying a variation." });
+    const revision = (await getCookingSession(db, actorA, cook.id)).revision;
+    await expect(discardCookingSession(db, actorB, cook.id, { expectedRevision: revision })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(discardCookingSession(db, actorA, cook.id, { expectedRevision: revision + 5 })).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await discardCookingSession(db, actorA, cook.id, { expectedRevision: revision })).toMatchObject({ recipeId: recipe.id, discarded: true });
+    await expect(getCookingSession(db, actorA, cook.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await getRecipeLearnings(db, actorA, recipe.id)).totalPastCooks).toBe(0);
+
+    const finished = await startCookingSession(db, actorA, { recipeId: recipe.id, expectedVersionId: recipe.version.id });
+    const done = await finishCookingSession(db, actorA, finished.id, { expectedRevision: finished.revision, status: "completed" });
+    await expect(discardCookingSession(db, actorA, finished.id, { expectedRevision: done.revision })).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });
